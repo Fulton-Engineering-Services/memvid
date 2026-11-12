@@ -181,7 +181,18 @@ impl EmbeddedWal {
 
     pub fn record_checkpoint(&mut self, header: &mut Header) -> Result<()> {
         self.assert_writable()?;
-        self.checkpoint_head = self.write_head;
+        // `write_head` is a ring cursor, not an offset: since the exact-fit fix it legitimately
+        // sits at `region_size` when the ring is exactly full. Persisting that verbatim would put
+        // `region_size` into a field every other writer stores as an in-region offset, so a future
+        // consumer doing `region_offset + header.wal_checkpoint_pos` would land past the region.
+        // Reduce it here, on the write side. `open_internal` already reduces modulo `region_size`
+        // on the read side and `checkpoint_head` has no other reader, so this is trap-hardening
+        // rather than a defect fix: no current behaviour changes.
+        //
+        // `write_head` itself is deliberately left un-normalised - the boundary guard in
+        // `maybe_write_sentinel` tests `write_head >= region_size`, and folding the cursor here
+        // would make that guard unreachable and restore the sentinel-at-offset-0 defect.
+        self.checkpoint_head = self.write_head % self.region_size;
         self.pending_bytes = 0;
         self.appends_since_checkpoint = 0;
         self.checkpoint_sequence = self.sequence;
