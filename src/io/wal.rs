@@ -74,7 +74,15 @@ impl EmbeddedWal {
             file: clone,
             region_offset,
             region_size,
-            write_head: next_head % region_size,
+            // A ring that is exactly full sits on the boundary, not at 0. Collapsing the
+            // boundary to 0 here makes the first write after reopen land on offset 0, which is
+            // inside the live span whenever records are still pending, and disarms the
+            // protective wrap guard in `append_entry`.
+            write_head: if next_head >= region_size {
+                region_size
+            } else {
+                next_head
+            },
             checkpoint_head: header.wal_checkpoint_pos % region_size,
             pending_bytes,
             sequence,
@@ -144,7 +152,14 @@ impl EmbeddedWal {
         );
         self.write_record(self.write_head, next_sequence, payload)?;
 
-        self.write_head = (self.write_head + entry_size) % self.region_size;
+        // Keep an exact fit at the boundary instead of collapsing it to 0. Collapsing makes the
+        // next append look like a write at offset 0, so the guard above never fires and the
+        // append silently restarts over the oldest uncheckpointed records.
+        self.write_head = if self.write_head + entry_size == self.region_size {
+            self.region_size
+        } else {
+            (self.write_head + entry_size) % self.region_size
+        };
         self.pending_bytes += entry_size;
         self.sequence = self.sequence.wrapping_add(1);
         self.appends_since_checkpoint = self.appends_since_checkpoint.saturating_add(1);
@@ -166,7 +181,18 @@ impl EmbeddedWal {
 
     pub fn record_checkpoint(&mut self, header: &mut Header) -> Result<()> {
         self.assert_writable()?;
-        self.checkpoint_head = self.write_head;
+        // `write_head` is a ring cursor, not an offset: since the exact-fit fix it legitimately
+        // sits at `region_size` when the ring is exactly full. Persisting that verbatim would put
+        // `region_size` into a field every other writer stores as an in-region offset, so a future
+        // consumer doing `region_offset + header.wal_checkpoint_pos` would land past the region.
+        // Reduce it here, on the write side. `open_internal` already reduces modulo `region_size`
+        // on the read side and `checkpoint_head` has no other reader, so this is trap-hardening
+        // rather than a defect fix: no current behaviour changes.
+        //
+        // `write_head` itself is deliberately left un-normalised - the boundary guard in
+        // `maybe_write_sentinel` tests `write_head >= region_size`, and folding the cursor here
+        // would make that guard unreachable and restore the sentinel-at-offset-0 defect.
+        self.checkpoint_head = self.write_head % self.region_size;
         self.pending_bytes = 0;
         self.appends_since_checkpoint = 0;
         self.checkpoint_sequence = self.sequence;
@@ -183,13 +209,22 @@ impl EmbeddedWal {
         let (entries, next_head) =
             Self::scan_records(&mut self.file, self.region_offset, self.region_size)?;
 
+        if !self.read_only {
+            self.corroborate_scan(&entries, next_head);
+        }
         self.sequence = entries.last().map_or(self.sequence, |entry| entry.sequence);
         self.pending_bytes = entries
             .iter()
             .filter(|entry| entry.sequence > self.checkpoint_sequence)
             .map(|entry| entry.total_size)
             .sum();
-        self.write_head = next_head % self.region_size;
+        // Same non-collapsing rule as `open_internal` and `append_entry`: `scan_records`
+        // returns the cursor at the region end when the ring is exactly full.
+        self.write_head = if next_head >= self.region_size {
+            self.region_size
+        } else {
+            next_head
+        };
         if !self.read_only {
             self.initialise_sentinel()?;
         }
@@ -277,12 +312,20 @@ impl EmbeddedWal {
         Ok(())
     }
 
-    fn write_zero_header(&mut self, position: u64) -> Result<u64> {
+    /// Terminate the record chain at `position`.
+    ///
+    /// Returns `()` on purpose: the caller owns `write_head`. The old signature returned the
+    /// position actually written, and when the tail could not hold a 48-byte header it jumped
+    /// that position to 0 - so the caller stored 0 in `write_head` *and* a zero header was
+    /// written on offset 0, which is the oldest uncheckpointed record. Since `scan_records`
+    /// always starts at cursor 0 and breaks on the first zero header, that single write made
+    /// every pending record in the region invisible.
+    fn write_zero_header(&mut self, position: u64) -> Result<()> {
         self.assert_writable()?;
         if self.region_size == 0 {
-            return Ok(0);
+            return Ok(());
         }
-        let mut pos = position % self.region_size;
+        let pos = position % self.region_size;
         let remaining = self.region_size - pos;
         if remaining < ENTRY_HEADER_SIZE as u64 {
             if remaining > 0 {
@@ -291,11 +334,14 @@ impl EmbeddedWal {
                 let zero_tail = vec![0u8; remaining as usize];
                 self.seek_and_write(pos, &zero_tail)?;
             }
-            pos = 0;
+            // Tail too short for a header: zero the tail and stop. Jumping to 0 would plant a
+            // zero header inside the live span. Leaving the cursor at the tail instead makes the
+            // next `append_entry` take its `wrapping` branch and raise `region full` while data
+            // is pending, which is the growth path the sentinel currently bypasses.
+            return Ok(());
         }
         let zero = [0u8; ENTRY_HEADER_SIZE];
-        self.seek_and_write(pos, &zero)?;
-        Ok(pos)
+        self.seek_and_write(pos, &zero)
     }
 
     fn seek_and_write(&mut self, position: u64, bytes: &[u8]) -> Result<()> {
@@ -314,10 +360,46 @@ impl EmbeddedWal {
         if self.pending_bytes >= self.region_size {
             return Ok(());
         }
-        // Sentinel marks end of valid entries - always keep write_head in sync
-        let next = self.write_zero_header(self.write_head)?;
-        self.write_head = next;
-        Ok(())
+        if self.write_head >= self.region_size {
+            // Sitting exactly on the region boundary: the chain is already terminated by the
+            // end of the region, and a sentinel written from here would be taken modulo the
+            // region and land on offset 0, truncating the scan before every pending record.
+            return Ok(());
+        }
+        // Sentinel marks end of valid entries. `write_head` is not moved: the sentinel goes at
+        // the first free position, which is where the next append writes anyway.
+        self.write_zero_header(self.write_head)
+    }
+
+    /// Cross-check the in-band scan against what this handle already believes.
+    ///
+    /// `scan_records` trusts an all-zero 48-byte header as end-of-log, so any bug that plants such
+    /// a header inside the live span turns into silent frame loss rather than an error. The
+    /// out-of-band truth (`header.wal_checkpoint_pos` / `header.wal_sequence`, written by
+    /// `record_checkpoint`) is deliberately *not* made authoritative here: `scan_records` is the
+    /// single read path shared by `open_internal`, `records_after` and `recover_wal`, so bounding
+    /// it by the checkpoint position would change replay semantics for every caller and let a
+    /// torn header write truncate the log silently in the other direction - trading a loud defect
+    /// for a quiet one. This is the additive version: when records are still pending and the scan
+    /// stopped short of where this handle was writing, say so loudly.
+    fn corroborate_scan(&self, entries: &[ScannedRecord], next_head: u64) {
+        if self.pending_bytes == 0 || self.region_size == 0 {
+            return;
+        }
+        let expected = self.write_head.min(self.region_size);
+        if next_head >= expected {
+            return;
+        }
+        tracing::error!(
+            wal.scan_cursor = next_head,
+            wal.write_head = self.write_head,
+            wal.pending_bytes = self.pending_bytes,
+            wal.checkpoint_sequence = self.checkpoint_sequence,
+            wal.scanned_records = entries.len(),
+            last_sequence = entries.last().map(|entry| entry.sequence),
+            "wal scan stopped before the write head while records are pending: an in-band zero \
+             terminator is hiding uncheckpointed records"
+        );
     }
 
     fn scan_records(file: &mut File, offset: u64, size: u64) -> Result<(Vec<ScannedRecord>, u64)> {
