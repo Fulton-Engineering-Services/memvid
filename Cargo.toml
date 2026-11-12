@@ -177,7 +177,7 @@ required-features = ["hnsw_bench"]
 # result pool is narrower than `dest`. The pool width is query- and data-dependent
 # (`search_zero_layer` only expands a node that entered the pool) and cannot be
 # probed by callers, because `Searcher::nearest` is private and no neighbour
-# accessor is public. This branch fixes both copy sites and pins the behaviour with
+# accessor is public. The fork's `main` branch fixes both copy sites and pins the behaviour with
 # `tests/nearest_oversized_dest.rs` **in the hnsw fork** (4/4 red on v0.11.0, 4/4 green
 # patched) -- not in this repo; the memvid-side regression coverage for the same defect
 # is `tests/hnsw_carryforward.rs`. Version is
@@ -187,6 +187,16 @@ required-features = ["hnsw_bench"]
 # `tag` or `rev` (specifying two fails the whole build with "specification is
 # ambiguous"), and a branch-pinned patch is mutable -- a force-push to the branch would
 # silently change what this crate, and every consumer inheriting the patched graph,
-# actually builds, while the regression tests still report green. The branch is named in
-# the comment above, where it cannot affect resolution.
-hnsw = { git = "https://github.com/Fulton-Engineering-Services/hnsw", rev = "cb1ae586392c21795efdf3131dca055337c13885" }
+# actually builds, while the regression tests still report green. The rev below is the tip
+# of the fork's `main` branch, named here where it cannot affect resolution.
+#
+# Deliberately NOT `cb1ae586`, an earlier candidate that bundled the same copy-slice fix
+# with unreviewed deletions -- the public `Layer` / `HasNeighbors` / `new_with_capacity`
+# API and the brute-force differential test in `tests/simple.rs`. `main` does carry that
+# commit's `lower_search` seen-handling deviation, because carrying `seen` down the layer
+# descent is what lets `ef` admit its full candidate budget (200 vs 138 candidates at
+# `ef = 200` on the 1001-vector fixture -- see `ef_sets_the_graph_candidate_pool` in
+# `tests/hnsw_carryforward.rs`, which fails 3 tests if it is dropped), while keeping
+# upstream's public API and test suite, so the deviation stays checked against brute force
+# rather than asserted. Do not re-pin `cb1ae586`.
+hnsw = { git = "https://github.com/Fulton-Engineering-Services/hnsw", rev = "9115203ca0c8e27e21cfe3672e45813066a5fffa" }
