@@ -27,6 +27,34 @@ const HNSW_THRESHOLD: usize = 1000;
 #[cfg(any(feature = "vec", feature = "hnsw_bench"))]
 const HNSW_DISTANCE_SCALE: f32 = 100_000.0;
 
+/// Default query-time candidate pool width (`ef`) for HNSW search.
+///
+/// hnsw explores `ef` candidates per query and hands back at most
+/// `min(ef, graph_len)` of them, so this value also bounds how many hits an
+/// HNSW-backed search can return regardless of the `limit` a caller passes.
+pub const HNSW_EF_SEARCH: usize = 50;
+
+/// Upper bound for `ef`. The pool is explored on every query, so an unbounded
+/// knob would let a mistyped value pin a core; callers are clamped, not rejected.
+pub const HNSW_EF_SEARCH_MAX: usize = 4096;
+
+/// The single definition of how wide an HNSW query is allowed to be, shared by
+/// [`HnswVecIndex::search_with_ef`] (which sizes the destination buffer) and
+/// [`HnswVecIndex::search_width`] (which advertises it).
+///
+/// Both must agree exactly: if the advertised width drifts above the buffer width,
+/// callers are told "not truncated" while hits were dropped, and if it drifts below,
+/// they are told "truncated" for complete results. `dest.len() <= ef` is the invariant
+/// the patched hnsw relies on to fill the destination it is handed.
+#[cfg(any(feature = "vec", feature = "hnsw_bench"))]
+fn target_width(limit: usize, ef: usize, graph_len: usize) -> usize {
+    if limit == 0 {
+        return 0;
+    }
+    let ef = ef.clamp(1, HNSW_EF_SEARCH_MAX);
+    limit.min(ef).min(graph_len).max(1)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VecDocument {
     pub frame_id: FrameId,
@@ -230,9 +258,28 @@ impl VecIndex {
 
     #[must_use]
     pub fn search(&self, query: &[f32], limit: usize) -> Vec<VecSearchHit> {
+        self.search_with_ef(query, limit, HNSW_EF_SEARCH)
+    }
+
+    /// Nearest-neighbour search with an explicit query-time candidate width.
+    ///
+    /// `ef` is the candidate pool the HNSW backend explores per query. It only
+    /// affects that backend: the uncompressed backend scores every document and
+    /// the compressed backend searches exhaustively, so for both `limit` alone
+    /// applies. An HNSW search returns at most `min(limit, ef, graph_len)` hits,
+    /// so a caller needing `limit` results needs `ef >= limit`.
+    #[must_use]
+    pub fn search_with_ef(&self, query: &[f32], limit: usize, ef: usize) -> Vec<VecSearchHit> {
         if query.is_empty() {
             return Vec::new();
         }
+        // `ef` is only meaningful for the HNSW backend. Without `vec`/`hnsw_bench`
+        // that arm is compiled out -- the uncompressed backend scores every document
+        // and the compressed one searches exhaustively -- so the parameter would be
+        // unused and `cargo clippy -D warnings` (which CI runs on default features)
+        // would fail the build.
+        #[cfg(not(any(feature = "vec", feature = "hnsw_bench")))]
+        let _ = ef;
         match self {
             VecIndex::Uncompressed { documents } => {
                 let mut hits: Vec<VecSearchHit> = documents
@@ -255,7 +302,33 @@ impl VecIndex {
             }
             VecIndex::Compressed(quantized) => quantized.search(query, limit),
             #[cfg(any(feature = "vec", feature = "hnsw_bench"))]
-            VecIndex::Hnsw(index) => index.search(query, limit),
+            VecIndex::Hnsw(index) => index.search_with_ef(query, limit, ef),
+        }
+    }
+
+    /// Maximum number of hits [`search_with_ef`](Self::search_with_ef) can return for
+    /// this `(limit, ef)` pair.
+    ///
+    /// Only the HNSW backend can be narrowed by `ef`; the uncompressed and compressed
+    /// backends score every stored document, so `limit` binds them -- and, for the
+    /// uncompressed arm, the number of documents actually stored. A caller that gets
+    /// fewer hits than this width was asked either hit the `ef` ceiling or found
+    /// genuinely fewer matching vectors.
+    #[must_use]
+    pub fn search_width(&self, limit: usize, ef: usize) -> usize {
+        // Only the HNSW arm below consumes `ef`; without either vector feature it is
+        // compiled out, and CI's default-features `clippy -D warnings` would fail on
+        // the unused parameter.
+        #[cfg(not(any(feature = "vec", feature = "hnsw_bench")))]
+        let _ = ef;
+        match self {
+            #[cfg(any(feature = "vec", feature = "hnsw_bench"))]
+            VecIndex::Hnsw(index) => index.search_width(limit, ef),
+            // Scoring every document still cannot yield more hits than there are.
+            VecIndex::Uncompressed { documents } => limit.min(documents.len()),
+            // `QuantizedIndex` exposes no document count, so `limit` is the only bound
+            // that can be advertised honestly here.
+            VecIndex::Compressed(_) => limit,
         }
     }
 
@@ -272,10 +345,19 @@ impl VecIndex {
                 Box::new(std::iter::empty())
             }
             #[cfg(any(feature = "vec", feature = "hnsw_bench"))]
-            VecIndex::Hnsw(_) => {
-                // HNSW graph doesn't easily iterate all embeddings
-                Box::new(std::iter::empty())
-            }
+            VecIndex::Hnsw(index) => Box::new(
+                // The hnsw graph keeps every feature it was given, and
+                // `feature(i)` for `i in 0..len()` yields the i-th insertion --
+                // which is the order `HnswVecIndex::build` pushes into `ids`.
+                // Without this, rebuilding an HNSW-backed store drops every
+                // existing vector; see the integration test
+                // `hnsw_entries_yield_every_vector_in_insertion_order`.
+                // `ids` and the graph are appended together in `build`, so these
+                // lengths agree by construction; the bound keeps a corrupt or
+                // future-divergent artifact from panicking in a rebuild path.
+                (0..index.graph.len().min(index.ids.len()))
+                    .map(|i| (index.ids[i], index.graph.feature(i).as_slice())),
+            ),
         }
     }
 
@@ -291,11 +373,12 @@ impl VecIndex {
                 None
             }
             #[cfg(any(feature = "vec", feature = "hnsw_bench"))]
-            VecIndex::Hnsw(_) => {
-                // HNSW storage is internal, would need traversal to find exact embedding
-                // For now, return None as we do for Compressed
-                None
-            }
+            VecIndex::Hnsw(index) => index
+                .ids
+                .iter()
+                .position(|&id| id == frame_id)
+                .filter(|&i| i < index.graph.len())
+                .map(|i| index.graph.feature(i).as_slice()),
         }
     }
 
@@ -384,26 +467,46 @@ impl HnswVecIndex {
 
     #[must_use]
     pub fn search(&self, query: &[f32], limit: usize) -> Vec<VecSearchHit> {
+        self.search_with_ef(query, limit, HNSW_EF_SEARCH)
+    }
+
+    /// Nearest-neighbour search with an explicit query-time candidate width.
+    ///
+    /// `hnsw::nearest` fills at most `min(ef, graph_len)` neighbours and then
+    /// copies them with `copy_from_slice` into the *whole* destination slice, so a
+    /// destination longer than it can fill panics. `want` below is the largest
+    /// width both sides agree on, which makes every `(limit, ef)` pair safe --
+    /// including `limit > ef` (the shape that used to panic) and `ef > graph_len`.
+    #[must_use]
+    pub fn search_with_ef(&self, query: &[f32], limit: usize, ef: usize) -> Vec<VecSearchHit> {
+        if limit == 0 || query.is_empty() || self.ids.is_empty() {
+            return Vec::new();
+        }
         // Use thread-local searcher and dest buffer to avoid per-query allocations
         thread_local! {
             static SEARCHER: std::cell::RefCell<Searcher<u32>> = std::cell::RefCell::new(Searcher::new());
             static DEST: std::cell::RefCell<Vec<space::Neighbor<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
         }
 
-        // ef_search: query-time search width. Higher = better recall, slower search.
-        // Default: 50 as per maintainer specification. Can be exposed as option later.
-        let ef_search = 50;
+        // Clamped here as well as inside `target_width`: this `ef` is the *candidate
+        // pool* handed to `hnsw::nearest`, which allocates and explores it, so it must
+        // never see a raw value. `target_width` clamps for its own sake (and for the
+        // accessor, which has no other clamp); the two must agree so that
+        // `dest.len() <= ef` holds, which is what the patched `nearest` relies on to
+        // fill the destination slice it is handed.
+        let ef = ef.clamp(1, HNSW_EF_SEARCH_MAX);
+        let want = target_width(limit, ef, self.graph.len());
 
         SEARCHER.with(|searcher_cell| {
             DEST.with(|dest_cell| {
                 let mut searcher = searcher_cell.borrow_mut();
                 let mut dest = dest_cell.borrow_mut();
 
-                // Ensure dest has enough capacity
-                let required_size = limit.max(ef_search);
-                if dest.len() < required_size {
+                // The thread-local only ever grows; slice it down to `want` so hnsw
+                // never receives a destination wider than it can fill.
+                if dest.len() < want {
                     dest.resize(
-                        required_size,
+                        want,
                         space::Neighbor {
                             index: !0,
                             distance: 0,
@@ -414,12 +517,9 @@ impl HnswVecIndex {
                 // Convert query slice to Vec for the graph
                 let query_vec: Vec<f32> = query.to_vec();
 
-                let found = self.graph.nearest(
-                    &query_vec,
-                    ef_search,
-                    &mut searcher,
-                    &mut dest[..required_size],
-                );
+                let found = self
+                    .graph
+                    .nearest(&query_vec, ef, &mut searcher, &mut dest[..want]);
 
                 found
                     .iter()
@@ -431,6 +531,24 @@ impl HnswVecIndex {
                     .collect()
             })
         })
+    }
+
+    /// Maximum number of hits [`search_with_ef`](Self::search_with_ef) can return for
+    /// this `(limit, ef)` pair.
+    ///
+    /// `ef` is a **ceiling** on returned width, not a floor on exploration: asking for
+    /// more hits than `ef` silently yields `ef`, which is easy to mistake for an empty
+    /// or lossy index. Compare a result's length against this width to tell the two
+    /// apart. A shortfall below it means the graph could not reach that many nodes from
+    /// its entry point -- hnsw's descent explores only what the layer links expose, and
+    /// a 1008-node store measured here reachable to 982 -- which no caller can observe
+    /// through the public API without this.
+    #[must_use]
+    pub fn search_width(&self, limit: usize, ef: usize) -> usize {
+        if limit == 0 || self.ids.is_empty() {
+            return 0;
+        }
+        target_width(limit, ef, self.graph.len())
     }
 }
 

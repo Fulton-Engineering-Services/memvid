@@ -162,3 +162,31 @@ harness = false
 name = "vec_search_benchmark"
 harness = false
 required-features = ["hnsw_bench"]
+
+# FES-maintained patches. Cargo honours `[patch]` only from the manifest of the
+# workspace being built, so this entry fixes memvid-core's own tests and any
+# workspace that inherits it -- it does NOT reach a consumer that depends on
+# memvid-core. memvid-kb-rs must declare the SAME `hnsw` entry in its own root
+# manifest, or the fork's `HnswVecIndex` links against crates.io hnsw and the
+# `copy_from_slice` panic survives in the shipped binary while every fork-side
+# gate stays green. Verify from the consumer workspace with
+# `cargo tree -i hnsw`, which must name the git source.
+[patch.crates-io]
+# Upstream v0.11.0 `Hnsw::nearest`/`search_layer` do
+# `dest.copy_from_slice(&searcher.nearest[..found])`, which panics whenever the
+# result pool is narrower than `dest`. The pool width is query- and data-dependent
+# (`search_zero_layer` only expands a node that entered the pool) and cannot be
+# probed by callers, because `Searcher::nearest` is private and no neighbour
+# accessor is public. This branch fixes both copy sites and pins the behaviour with
+# `tests/nearest_oversized_dest.rs` **in the hnsw fork** (4/4 red on v0.11.0, 4/4 green
+# patched) -- not in this repo; the memvid-side regression coverage for the same defect
+# is `tests/hnsw_carryforward.rs`. Version is
+# unchanged at 0.11.0, so serialisation and the wire format are identical.
+#
+# Pinned by `rev`, deliberately NOT by `branch`: cargo allows only one of `branch`,
+# `tag` or `rev` (specifying two fails the whole build with "specification is
+# ambiguous"), and a branch-pinned patch is mutable -- a force-push to the branch would
+# silently change what this crate, and every consumer inheriting the patched graph,
+# actually builds, while the regression tests still report green. The branch is named in
+# the comment above, where it cannot affect resolution.
+hnsw = { git = "https://github.com/Fulton-Engineering-Services/hnsw", rev = "cb1ae586392c21795efdf3131dca055337c13885" }

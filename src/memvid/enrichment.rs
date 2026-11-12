@@ -480,8 +480,34 @@ impl Memvid {
         // Add existing embeddings from current index
         if let Some(ref vec_index) = self.vec_index {
             for (frame_id, embedding) in vec_index.entries() {
-                // Skip if we're replacing this frame's embedding
-                if !embeddings.iter().any(|(id, _)| *id == frame_id) {
+                // Two filters, both required:
+                //
+                // * `frame_is_active` -- exactly the guard `build_vec_artifact` applies to
+                //   carried vectors (`search/builders.rs`) and that
+                //   `build_vec_index_from_segments` applies to decoded segment vectors, so
+                //   all three carry sites apply one policy. It matters because
+                //   `VecIndex::remove` is a no-op for the HNSW arm: this carry loop is the
+                //   *only* thing standing between an erased frame's vector and a rebuilt
+                //   index that serves it again.
+                //
+                //   Honest note on its status: no public-API sequence currently makes its
+                //   absence observable, so it is deliberately NOT covered by a test.
+                //   `delete_frame` only appends a WAL tombstone -- it does not touch
+                //   `toc.frames[..].status`, which flips when the WAL is replayed at
+                //   commit -- and `add_embeddings` sets `dirty`, so the following commit
+                //   always rebuilds from scratch: `commit()` calls `build_vec_artifact`
+                //   unconditionally (`mutation.rs:2256`, and it returns `Ok(None)` only when
+                //   `vec_enabled` is false) and re-filters with a current TOC. A test written
+                //   against this path therefore either passes because `frame_is_active` still
+                //   reports the frame Active (the delete is not visible yet) or passes
+                //   because the commit path already dropped the vector; neither pins this
+                //   line. Kept as symmetry with the sibling sites, not as tested behaviour.
+                //
+                // * not being replaced -- frames named in `embeddings` get their new
+                //   vector from the loop below, so carrying the old one would duplicate.
+                if self.frame_is_active(frame_id)
+                    && !embeddings.iter().any(|(id, _)| *id == frame_id)
+                {
                     builder.add_document(frame_id, embedding.to_vec());
                 }
             }

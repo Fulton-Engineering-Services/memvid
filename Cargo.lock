@@ -2275,8 +2275,7 @@ dependencies = [
 [[package]]
 name = "hnsw"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b9740ebf8769ec4ad6762cc951ba18f39bba6dfbc2fbbe46285f7539af79752"
+source = "git+https://github.com/Fulton-Engineering-Services/hnsw?rev=cb1ae586392c21795efdf3131dca055337c13885#cb1ae586392c21795efdf3131dca055337c13885"
 dependencies = [
  "ahash 0.7.8",
  "hashbrown 0.11.2",
@@ -3152,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "memvid-core"
-version = "2.0.135"
+version = "2.0.140"
 dependencies = [
  "aes-gcm",
  "argon2",
