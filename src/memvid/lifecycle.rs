@@ -72,6 +72,8 @@ pub struct Memvid {
     pub(crate) vec_compression: VectorCompression,
     pub(crate) vec_model: Option<String>,
     pub(crate) vec_index: Option<VecIndex>,
+    /// Query-time HNSW candidate pool width (`ef`). See [`Self::set_ef_search`].
+    pub(crate) ef_search: usize,
     /// CLIP visual embeddings index (separate from vec due to different dimensions)
     pub(crate) clip_enabled: bool,
     pub(crate) clip_index: Option<crate::clip::ClipIndex>,
@@ -199,6 +201,7 @@ impl Memvid {
             vec_compression: VectorCompression::None,
             vec_model: None,
             vec_index: None,
+            ef_search: crate::vec::HNSW_EF_SEARCH,
             clip_enabled: cfg!(feature = "clip"), // Enable by default if feature is enabled
             clip_index: None,
             dirty: false,
@@ -285,6 +288,46 @@ impl Memvid {
     #[must_use]
     pub fn vector_compression(&self) -> &VectorCompression {
         &self.vec_compression
+    }
+
+    /// Set the query-time HNSW candidate pool width (`ef`).
+    ///
+    /// hnsw explores `ef` candidates per query and returns at most `min(ef,
+    /// graph_len)` of them, so `ef` also caps how many hits an HNSW-backed search
+    /// can return no matter what `limit` the caller asks for -- asking for more
+    /// candidates than `ef` silently yields fewer. Larger `ef` costs latency.
+    /// Clamped to `1..=HNSW_EF_SEARCH_MAX`; `0` becomes `1`.
+    pub fn set_ef_search(&mut self, ef: usize) {
+        self.ef_search = ef.clamp(1, crate::vec::HNSW_EF_SEARCH_MAX);
+    }
+
+    /// Current query-time HNSW candidate pool width. See [`Self::set_ef_search`].
+    #[must_use]
+    pub fn ef_search(&self) -> usize {
+        self.ef_search
+    }
+
+    /// Maximum number of hits [`Self::search_vec`] can return for `limit` at the
+    /// current [`ef_search`](Self::ef_search); `0` when vectors are not enabled.
+    ///
+    /// `ef` is a ceiling on returned width rather than a floor on exploration, so a
+    /// `limit` above it silently yields `ef` hits. Compare
+    /// `search_vec(query, limit)?.len()` against this to tell truncation by `ef` apart
+    /// from an index that genuinely holds fewer matching vectors. A result shorter than
+    /// *this* width is hnsw reachability from the graph entry point, not the knob.
+    ///
+    /// Takes `&mut self` because it loads the vector index on demand, the way the search
+    /// paths do. On a handle that has not searched yet the index is simply not in
+    /// memory, and answering `0` there would report an empty index to a caller about to
+    /// get hits. A failed load also answers `0`, since no index is then available.
+    #[must_use]
+    pub fn vec_search_width(&mut self, limit: usize) -> usize {
+        if self.vec_enabled {
+            let _ = self.ensure_vec_index();
+        }
+        self.vec_index
+            .as_ref()
+            .map_or(0, |index| index.search_width(limit, self.ef_search))
     }
 
     /// Predict the next frame ID that would be assigned to a new insert.
@@ -381,6 +424,7 @@ impl Memvid {
             vec_compression: VectorCompression::None,
             vec_model: None,
             vec_index: None,
+            ef_search: crate::vec::HNSW_EF_SEARCH,
             clip_enabled: false,
             clip_index: None,
             dirty: false,
@@ -516,6 +560,7 @@ impl Memvid {
             vec_compression: VectorCompression::None,
             vec_model: None,
             vec_index: None,
+            ef_search: crate::vec::HNSW_EF_SEARCH,
             clip_enabled: false,
             clip_index: None,
             dirty: false,

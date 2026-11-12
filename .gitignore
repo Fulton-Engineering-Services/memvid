@@ -47,3 +47,7 @@ issue_overview.md
 feature_100x_memvid.md
 
 plan_model_robust.md
+
+# Nested `git worktree` checkouts (e.g. scratch trees for baseline runs). Left
+# unignored they get swept into `git add -A` from the parent checkout.
+.git-worktrees/

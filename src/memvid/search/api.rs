@@ -159,7 +159,7 @@ impl Memvid {
             self.ensure_vec_index()?;
         }
         let index = self.vec_index.as_ref().ok_or(MemvidError::VecNotEnabled)?;
-        Ok(index.search(query, limit))
+        Ok(index.search_with_ef(query, limit, self.ef_search))
     }
 
     /// Enable CLIP visual embeddings index.
@@ -343,7 +343,7 @@ impl Memvid {
         let vec_index = self.vec_index.as_ref().ok_or(MemvidError::VecNotEnabled)?;
 
         // Do pure vector search over entire index
-        let vec_hits = vec_index.search(query_embedding, top_k * 2);
+        let vec_hits = vec_index.search_with_ef(query_embedding, top_k * 2, self.ef_search);
 
         if vec_hits.is_empty() {
             let elapsed_ms = start_time.elapsed().as_millis();
