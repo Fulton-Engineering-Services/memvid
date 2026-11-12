@@ -2275,7 +2275,7 @@ dependencies = [
 [[package]]
 name = "hnsw"
 version = "0.11.0"
-source = "git+https://github.com/Fulton-Engineering-Services/hnsw?rev=cb1ae586392c21795efdf3131dca055337c13885#cb1ae586392c21795efdf3131dca055337c13885"
+source = "git+https://github.com/Fulton-Engineering-Services/hnsw?rev=9115203ca0c8e27e21cfe3672e45813066a5fffa#9115203ca0c8e27e21cfe3672e45813066a5fffa"
 dependencies = [
  "ahash 0.7.8",
  "hashbrown 0.11.2",
