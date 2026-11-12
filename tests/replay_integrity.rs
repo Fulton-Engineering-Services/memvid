@@ -6,7 +6,8 @@
 
 #[cfg(all(feature = "lex", feature = "replay"))]
 use memvid_core::{Memvid, PutOptions, SearchRequest};
-#[cfg(all(feature = "lex", feature = "replay"))]
+// Ungated on purpose: the WAL tests below are themselves ungated so they run under the
+// default feature set that CI builds, and each one owns a `TempDir` for its scratch store.
 use tempfile::TempDir;
 
 #[test]
@@ -142,11 +143,16 @@ fn payload_for(len: usize, i: usize) -> Vec<u8> {
     p
 }
 
-fn scratch_path(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "memvid-d4-replay-integrity-{tag}-{}.bin",
-        std::process::id()
-    ))
+/// Path of a test's scratch store inside the `TempDir` that test owns.
+///
+/// The directory, not the file, is the unit of cleanup: `TempDir::drop` removes it when the
+/// test leaves scope, *including through a panicking assertion*. The previous scheme could not
+/// promise that - it put the file directly in `env::temp_dir()` under a name built from the
+/// tag and the pid, and deleted it with an inline `remove_file` sitting before the final
+/// assertion. The first assertion to fire therefore orphaned the file, and nothing could ever
+/// revisit the orphan because the pid baked into its name had died with the run.
+fn store_path(dir: &TempDir) -> PathBuf {
+    dir.path().join("wal-store.mv2")
 }
 
 fn create_store(path: &Path, region: u64) -> (File, Header) {
@@ -229,7 +235,8 @@ fn sentinel_at_region_end_hides_uncheckpointed_records() {
         "the leftover tail must be smaller than one record header"
     );
 
-    let path = scratch_path("trigger-a");
+    let dir = TempDir::new().expect("scratch dir for trigger A");
+    let path = store_path(&dir);
     let (file, header) = create_store(&path, TRIGGER_A_REGION);
     let mut wal = EmbeddedWal::open(&file, &header).expect("open wal");
 
@@ -258,7 +265,6 @@ fn sentinel_at_region_end_hides_uncheckpointed_records() {
         .expect("pending_records after reopen");
     drop(reader);
     let missing = missing_sequences(1, TRIGGER_A_RECORDS as u64, &recovered);
-    let _ = std::fs::remove_file(&path);
 
     assert!(
         missing.is_empty(),
@@ -282,7 +288,8 @@ fn sentinel_at_region_end_hides_uncheckpointed_records() {
 /// forces a checkpoint in time. The WAL's own accounting must agree with what it hands back.
 #[test]
 fn pending_byte_accounting_agrees_with_recoverable_records() {
-    let path = scratch_path("accounting");
+    let dir = TempDir::new().expect("scratch dir for the pending-byte accounting test");
+    let path = store_path(&dir);
     let (file, header) = create_store(&path, TRIGGER_A_REGION);
     let mut wal = EmbeddedWal::open(&file, &header).expect("open wal");
     for i in 0..TRIGGER_A_RECORDS {
@@ -304,7 +311,6 @@ fn pending_byte_accounting_agrees_with_recoverable_records() {
         .expect("pending_records after reopen")
         .len();
     drop(reader);
-    let _ = std::fs::remove_file(&path);
 
     let claimed = usize::try_from(pending_bytes / TRIGGER_A_ENTRY).expect("fits usize");
     assert_eq!(
@@ -398,7 +404,8 @@ fn exact_divisor_entry_loses_records_after_checkpoint_resets_pending_bytes() {
         "the ring must hold exactly 64 records per lap"
     );
 
-    let path = scratch_path("trigger-b");
+    let dir = TempDir::new().expect("scratch dir for trigger B");
+    let path = store_path(&dir);
     let (mut file, mut header) = create_store(&path, TRIGGER_B_REGION);
     let mut wal = EmbeddedWal::open(&file, &header).expect("open wal");
 
@@ -457,7 +464,6 @@ fn exact_divisor_entry_loses_records_after_checkpoint_resets_pending_bytes() {
         }
     }
 
-    let _ = std::fs::remove_file(&path);
     if let Some(msg) = first_break {
         assert!(
             header.wal_sequence > 0,
@@ -496,7 +502,8 @@ fn write_raw_header(file: &mut File, slot: u64, sequence: u64, length: u32) {
 /// traded away for something that looks like an improvement. Pinned here from both sides.
 #[test]
 fn bogus_record_length_is_still_reported_as_corruption() {
-    let path = scratch_path("bogus-length");
+    let dir = TempDir::new().expect("scratch dir for the bogus-length test");
+    let path = store_path(&dir);
     let (mut file, header) = create_store(&path, TRIGGER_B_REGION);
 
     // A length that pushes the record past the end of the region.
@@ -520,7 +527,6 @@ fn bogus_record_length_is_still_reported_as_corruption() {
         matches!(err, MemvidError::WalCorruption { .. }),
         "expected WalCorruption for a zero record length, got {err:?}"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 /// The other side of the same coin: a genuine end-of-log zero header must terminate the chain
@@ -528,7 +534,8 @@ fn bogus_record_length_is_still_reported_as_corruption() {
 /// open every healthy WAL.
 #[test]
 fn zero_terminator_ends_the_chain_without_error() {
-    let path = scratch_path("zero-terminator");
+    let dir = TempDir::new().expect("scratch dir for the zero-terminator test");
+    let path = store_path(&dir);
     let (file, header) = create_store(&path, TRIGGER_B_REGION);
     {
         let mut wal = EmbeddedWal::open(&file, &header).expect("open wal");
@@ -545,7 +552,6 @@ fn zero_terminator_ends_the_chain_without_error() {
         "one appended record must be recoverable across a zero terminator"
     );
     drop(reader);
-    let _ = std::fs::remove_file(&path);
 }
 
 /// The reopen path carries its **own** copy of the boundary collapse. `scan_records` returns the
@@ -572,7 +578,8 @@ fn reopen_at_exact_fill_preserves_pending_records() {
         "the fixture must fill the ring exactly: 48 checkpointed + 16 pending slots"
     );
 
-    let path = scratch_path("exact-fill");
+    let dir = TempDir::new().expect("scratch dir for the exact-fill reopen test");
+    let path = store_path(&dir);
     let (mut file, mut header) = create_store(&path, TRIGGER_B_REGION);
     let mut wal = EmbeddedWal::open(&file, &header).expect("open wal");
 
@@ -659,7 +666,6 @@ fn reopen_at_exact_fill_preserves_pending_records() {
     );
     drop(still);
     drop(checker);
-    let _ = std::fs::remove_file(&path);
 
     assert!(
         missing.is_empty(),
