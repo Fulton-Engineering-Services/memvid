@@ -190,13 +190,29 @@ required-features = ["hnsw_bench"]
 # actually builds, while the regression tests still report green. The rev below is the tip
 # of the fork's `main` branch, named here where it cannot affect resolution.
 #
+# The pinned rev also restores upstream `4ce5e6d`'s per-descent reset of the visited set
+# in `lower_search` (`seen.clear()`, then re-seeding the entry point), which this fork's
+# `9115203` had deleted so that `seen` persisted down the layer descent. The reset is the
+# recall-exact setting: against hnsw's brute-force oracle on its 1001-vector fixture
+# (DIM=8, M=12, EF_CONSTRUCTION=24, 16 fixed-seed queries) the reset returns 384/384
+# top-24 and 3198/3200 top-200, where carrying `seen` returned 379/384 and 3050/3200 with
+# 21 of those misses strictly closer than the worst result returned -- and no `ef`
+# (128, 200, 4096) recovered any of them. A build/search differential put the loss
+# entirely on the query side.
+#
+# What the carry appeared to buy in exchange -- a wider candidate pool -- is not something
+# this layer can promise, and nothing here depends on it. The width an HNSW query
+# delivers is a CEILING that depends on the query and on the links reachable from the
+# entry point, never a budget `ef` guarantees: `nearest` fills a 200-slot `dest`
+# completely at `ef = 200` under both settings, so the narrower counts this repo's tests
+# pin are measured ceilings at the rev below -- recorded per `ef` and per query in
+# `tests/hnsw_carryforward.rs` -- and not properties of hnsw. Do not re-justify a carry
+# from them, and do not read them as a width advantage either way.
+#
 # Deliberately NOT `cb1ae586`, an earlier candidate that bundled the same copy-slice fix
 # with unreviewed deletions -- the public `Layer` / `HasNeighbors` / `new_with_capacity`
-# API and the brute-force differential test in `tests/simple.rs`. `main` does carry that
-# commit's `lower_search` seen-handling deviation, because carrying `seen` down the layer
-# descent is what lets `ef` admit its full candidate budget (200 vs 138 candidates at
-# `ef = 200` on the 1001-vector fixture -- see `ef_sets_the_graph_candidate_pool` in
-# `tests/hnsw_carryforward.rs`, which fails 3 tests if it is dropped), while keeping
-# upstream's public API and test suite, so the deviation stays checked against brute force
-# rather than asserted. Do not re-pin `cb1ae586`.
-hnsw = { git = "https://github.com/Fulton-Engineering-Services/hnsw", rev = "9115203ca0c8e27e21cfe3672e45813066a5fffa" }
+# API and, decisively, the brute-force differential test in `tests/simple.rs`, which is
+# the only thing that measured the recall loss above. Keeping that test is what keeps
+# hnsw's behaviour checked against brute force rather than asserted. Do not re-pin
+# `cb1ae586`.
+hnsw = { git = "https://github.com/Fulton-Engineering-Services/hnsw", rev = "a1d6ca88587d0cc1ba26196ad4d45841544ac22f" }

@@ -632,12 +632,16 @@ fn ef_controls_the_candidate_width_at_the_vec_index_layer() {
         narrow.len()
     );
 
-    // Raising `ef` past `limit` lets `limit` become the binding constraint.
+    // Raising `ef` widens the pool only until the graph runs out of candidates it
+    // can reach from the entry point. From this query the store saturates at 138:
+    // `ef` = 200, 400 and `HNSW_EF_SEARCH_MAX` all deliver exactly 138 (measured at
+    // the pinned rev), so 138 is this query's reachability ceiling -- not a budget
+    // that `ef` grants, and not a truncation that a wider `ef` could undo.
     let wide = index.search_with_ef(&query, 200, 200);
     assert_eq!(
         wide.len(),
-        200,
-        "ef=200 must let 200 hits through, got {}",
+        138,
+        "ef=200 must deliver every candidate this query can reach, got {}",
         wide.len()
     );
     assert!(
@@ -717,19 +721,23 @@ fn set_ef_search_reaches_search_vec() {
 /// decorative argument.
 ///
 /// With `limit` (200) above every `ef` in the first group, the delivered width tracks
-/// `ef` exactly; the second group shows `limit` taking over once `ef` passes it. An
-/// implementation that accepted `ef` and then searched with the default pool would
-/// return 50 for every row here -- which is exactly the mutation this test exists to
-/// catch. Measured on this fixture, and stable: hnsw's traversal depends only on
-/// insertion order because `Hnsw::new`/`new_params` seed the PRNG with
-/// `R::Seed::default()` and `Searcher::new` builds its visited set with
-/// `RandomState::with_seeds(0, 0, 0, 0)` (pinned rev `cb1ae58`).
+/// `ef` exactly while the graph still has candidates left to hand back. The second
+/// group is the saturation point: from this query the store yields 138 candidates, and
+/// `ef` = 200, 400 and `HNSW_EF_SEARCH_MAX` all return the same 138, because width is
+/// bounded by what the layer links expose from the entry point, never by `ef` alone.
+/// An implementation that accepted `ef` and then searched with the default pool would
+/// return 50 on the `ef` = 1 and `ef` = 20 rows -- the mutation this test exists to
+/// catch -- and one that padded results up to `ef` would overshoot the saturated rows.
+/// Measured on this fixture, and stable: hnsw's traversal depends only on insertion
+/// order because `Hnsw::new`/`new_params` seed the PRNG with `R::Seed::default()` and
+/// `Searcher::new` builds its visited set with `RandomState::with_seeds(0, 0, 0, 0)`
+/// (pinned rev `a1d6ca88`).
 #[test]
 fn ef_sets_the_graph_candidate_pool() {
     let index = hnsw_vec_index(&docs(0));
     let query = [0.25f32; DIM];
 
-    for ef in [1usize, 20, 50, 100, 200] {
+    for ef in [1usize, 20, 50, 100] {
         let hits = index.search_with_ef(&query, 200, ef);
         assert_eq!(
             hits.len(),
@@ -739,13 +747,14 @@ fn ef_sets_the_graph_candidate_pool() {
         );
     }
 
-    // Past `limit`, `ef` stops binding: the width is `limit`, not `ef`.
-    for ef in [400usize, HNSW_EF_SEARCH_MAX] {
+    // Past this query's reach `ef` stops binding: the width is the 138 candidates the
+    // graph can actually reach, neither `ef` nor `limit`.
+    for ef in [200usize, 400, HNSW_EF_SEARCH_MAX] {
         let hits = index.search_with_ef(&query, 200, ef);
         assert_eq!(
             hits.len(),
-            200,
-            "limit must bind once ef={ef} exceeds it, got {}",
+            138,
+            "ef={ef} must saturate at the 138 candidates this query can reach, got {}",
             hits.len()
         );
     }
@@ -756,12 +765,15 @@ fn ef_sets_the_graph_candidate_pool() {
 /// from the entry point, so some nodes are unreachable however wide `ef` is.
 ///
 /// Measured on this exact fixture (1008 vectors in `docs(0)` insertion order, pinned
-/// hnsw rev `cb1ae58`, deterministic per the note on
+/// hnsw rev `a1d6ca88`, deterministic per the note on
 /// [`ef_sets_the_graph_candidate_pool`]): the queries `embedding(1)` and
-/// `embedding(333)` saturate at 129 candidates even at `ef = HNSW_EF_SEARCH_MAX`,
+/// `embedding(333)` saturate at 138 candidates even at `ef = HNSW_EF_SEARCH_MAX`,
 /// while `embedding(500)` and `embedding(1007)` reach the full 200. Pairing the two is
 /// the point -- it shows the shortfall is a property of the graph as seen from that
-/// query, not a global cap that `search_width` is failing to report. In every case the
+/// query, not a global cap that `search_width` is failing to report: at a store-wide
+/// `limit` those narrow queries still reach only 138 while others reach 1002 of the
+/// 1008 vectors, and the union of what every query can reach is 1002, so a handful of
+/// vectors are unreachable from anywhere however wide `ef` goes. In every case the
 /// query's own vector is still rank 0 at distance exactly 0, which is the guarantee a
 /// caller actually depends on.
 #[test]
@@ -775,8 +787,8 @@ fn search_width_advertises_a_ceiling_the_graph_may_not_reach() {
         assert_eq!(advertised, 200, "the ceiling is min(limit, ef)");
         assert_eq!(
             hits.len(),
-            129,
-            "probe {probe} reaches exactly 129 candidates on this fixture, got {}",
+            138,
+            "probe {probe} reaches exactly 138 candidates on this fixture, got {}",
             hits.len()
         );
         assert!(
@@ -795,7 +807,7 @@ fn search_width_advertises_a_ceiling_the_graph_may_not_reach() {
     }
 
     // The same request on probes the graph can reach fully delivers the advertised
-    // width, which is what makes the 129 above topology rather than a ceiling bug.
+    // width, which is what makes the 138 above topology rather than a ceiling bug.
     for probe in [500usize, 1007] {
         let query = embedding(probe);
         let hits = index.search_with_ef(&query, 200, HNSW_EF_SEARCH_MAX);
