@@ -286,7 +286,12 @@ fn collect_sheet_filenames(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<(Stri
     // Match sheet names to worksheet files
     for i in 0..archive.len() {
         if let Ok(file) = archive.by_index(i) {
-            let name = file.name().to_string();
+            // zip 9 can fail to decode an entry name; an entry whose name is
+            // unreadable cannot be matched as a worksheet, so skip it exactly
+            // like the unreadable-entry branches elsewhere in this function.
+            let Ok(name) = file.name() else {
+                continue;
+            };
             if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") {
                 // Extract sheet number from filename (e.g., "sheet1.xml" -> 0)
                 let num_str = name
@@ -297,7 +302,7 @@ fn collect_sheet_filenames(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<(Stri
                         .get(num.saturating_sub(1))
                         .cloned()
                         .unwrap_or_else(|| format!("Sheet{num}"));
-                    sheets.push((display_name, name));
+                    sheets.push((display_name, name.into_owned()));
                 }
             }
         }

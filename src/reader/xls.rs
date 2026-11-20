@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use calamine::{DataType, Reader as CalamineReader, Xls};
+use calamine::{Data, Reader as CalamineReader, Xls};
 
 use crate::{
     DocumentFormat, DocumentReader, PassthroughReader, ReaderDiagnostics, ReaderHint, ReaderOutput,
@@ -20,33 +20,35 @@ impl XlsReader {
 
         let mut out = String::new();
         for sheet_name in workbook.sheet_names().clone() {
-            if let Some(Ok(range)) = workbook.worksheet_range(&sheet_name) {
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(&format!("Sheet: {sheet_name}\n"));
-                for row in range.rows() {
-                    let mut first_cell = true;
-                    for cell in row {
-                        if !first_cell {
-                            out.push('\t');
-                        }
-                        first_cell = false;
-                        match cell {
-                            DataType::String(s) => out.push_str(s.trim()),
-                            DataType::Float(v) => out.push_str(&format!("{v}")),
-                            DataType::Int(v) => out.push_str(&format!("{v}")),
-                            DataType::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-                            DataType::Error(e) => out.push_str(&format!("#{e:?}")),
-                            DataType::Empty => {}
-                            DataType::DateTime(v) => out.push_str(&format!("{v}")),
-                            DataType::DateTimeIso(s) => out.push_str(s),
-                            DataType::Duration(v) => out.push_str(&format!("{v}")),
-                            DataType::DurationIso(s) => out.push_str(s),
-                        }
+            let Ok(range) = workbook.worksheet_range(&sheet_name) else {
+                continue;
+            };
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!("Sheet: {sheet_name}\n"));
+            for row in range.rows() {
+                let mut first_cell = true;
+                for cell in row {
+                    if !first_cell {
+                        out.push('\t');
                     }
-                    out.push('\n');
+                    first_cell = false;
+                    match cell {
+                        Data::String(s) => out.push_str(s.trim()),
+                        Data::Float(v) => out.push_str(&format!("{v}")),
+                        Data::Int(v) => out.push_str(&format!("{v}")),
+                        Data::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+                        Data::Error(e) => out.push_str(&format!("#{e:?}")),
+                        Data::Empty => {}
+                        // `ExcelDateTime`'s Display is the raw serial number, matching
+                        // the `f64` that calamine 0.22 carried in this arm.
+                        Data::DateTime(dt) => out.push_str(&format!("{dt}")),
+                        Data::DateTimeIso(s) => out.push_str(s),
+                        Data::DurationIso(s) => out.push_str(s),
+                    }
                 }
+                out.push('\n');
             }
         }
 
