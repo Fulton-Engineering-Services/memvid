@@ -265,12 +265,12 @@ impl<'a> GraphMatcher<'a> {
                 PatternTerm::Literal(slot),
                 PatternTerm::Literal(value),
             ) => {
-                if let Some(card) = self.memvid.get_current_memory(entity, slot) {
-                    if card.value.to_lowercase().contains(&value.to_lowercase()) {
-                        let result =
-                            GraphMatchResult::new(entity.clone(), vec![card.source_frame_id], 1.0);
-                        results.push(result);
-                    }
+                if let Some(card) = self.memvid.get_current_memory(entity, slot)
+                    && card.value.to_lowercase().contains(&value.to_lowercase())
+                {
+                    let result =
+                        GraphMatchResult::new(entity.clone(), vec![card.source_frame_id], 1.0);
+                    results.push(result);
                 }
             }
 

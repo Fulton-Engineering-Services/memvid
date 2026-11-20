@@ -709,11 +709,12 @@ impl Memvid {
         };
 
         if let Some(mut storage_manifest) = index_manifest {
-            if storage_manifest.bytes_offset == 0 && storage_manifest.bytes_length == 0 {
-                if let Some(prev) = previous_manifest.as_ref() {
-                    storage_manifest.bytes_offset = prev.bytes_offset;
-                    storage_manifest.bytes_length = prev.bytes_length;
-                }
+            if storage_manifest.bytes_offset == 0
+                && storage_manifest.bytes_length == 0
+                && let Some(prev) = previous_manifest.as_ref()
+            {
+                storage_manifest.bytes_offset = prev.bytes_offset;
+                storage_manifest.bytes_length = prev.bytes_length;
             }
             if let Some(existing) = self.toc.indexes.lex.as_mut() {
                 existing.doc_count = storage_manifest.doc_count;

@@ -260,12 +260,12 @@ fn find_table_boundaries(
     for row in 0..grid.num_rows {
         if grid.is_row_empty(row) {
             empty_streak += 1;
-            if empty_streak >= 2 {
-                if let Some(start) = current_start.take() {
-                    let end = row.saturating_sub(empty_streak);
-                    if end >= start {
-                        row_groups.push((start, end));
-                    }
+            if empty_streak >= 2
+                && let Some(start) = current_start.take()
+            {
+                let end = row.saturating_sub(empty_streak);
+                if end >= start {
+                    row_groups.push((start, end));
                 }
             }
         } else {
@@ -333,12 +333,12 @@ fn find_column_boundaries(grid: &SheetGrid, start_row: u32, end_row: u32) -> Vec
             empty_streak = 0;
         } else {
             empty_streak += 1;
-            if empty_streak >= 2 {
-                if let Some(start) = current_start.take() {
-                    let end = (ci as u32).saturating_sub(empty_streak);
-                    if end >= start {
-                        ranges.push((start, end));
-                    }
+            if empty_streak >= 2
+                && let Some(start) = current_start.take()
+            {
+                let end = (ci as u32).saturating_sub(empty_streak);
+                if end >= start {
+                    ranges.push((start, end));
                 }
             }
         }

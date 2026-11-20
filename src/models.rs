@@ -336,14 +336,13 @@ fn compute_sha256_hex(path: &Path) -> Result<String> {
 }
 
 fn select_weights_entry(manifest: &ModelManifest) -> Option<&ModelManifestEntry> {
-    if let Some(quant) = manifest.quant.as_deref() {
-        if let Some(entry) = manifest
+    if let Some(quant) = manifest.quant.as_deref()
+        && let Some(entry) = manifest
             .files
             .iter()
             .find(|entry| entry.path.ends_with(".onnx") && entry.path.contains(quant))
-        {
-            return Some(entry);
-        }
+    {
+        return Some(entry);
     }
 
     manifest

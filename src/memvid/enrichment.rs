@@ -127,10 +127,10 @@ pub fn start_enrichment_worker(
             },
             // checkpoint
             || {
-                if let Ok(mut mv) = memvid_clone.lock() {
-                    if let Err(err) = mv.commit() {
-                        tracing::warn!(?err, "enrichment checkpoint commit failed");
-                    }
+                if let Ok(mut mv) = memvid_clone.lock()
+                    && let Err(err) = mv.commit()
+                {
+                    tracing::warn!(?err, "enrichment checkpoint commit failed");
                 }
             },
         );
@@ -610,10 +610,10 @@ impl Memvid {
                             embeddings_generated += count;
                             // Store ready embeddings
                             let ready = batcher.take_embeddings();
-                            if !ready.is_empty() {
-                                if let Err(err) = self.add_embeddings(ready) {
-                                    tracing::warn!(?err, "failed to add embeddings");
-                                }
+                            if !ready.is_empty()
+                                && let Err(err) = self.add_embeddings(ready)
+                            {
+                                tracing::warn!(?err, "failed to add embeddings");
                             }
                         }
                         Err(err) => {
@@ -643,10 +643,10 @@ impl Memvid {
                 Ok(count) => {
                     embeddings_generated += count;
                     let ready = batcher.take_embeddings();
-                    if !ready.is_empty() {
-                        if let Err(err) = self.add_embeddings(ready) {
-                            tracing::warn!(?err, "failed to add final embeddings");
-                        }
+                    if !ready.is_empty()
+                        && let Err(err) = self.add_embeddings(ready)
+                    {
+                        tracing::warn!(?err, "failed to add final embeddings");
                     }
                 }
                 Err(err) => {

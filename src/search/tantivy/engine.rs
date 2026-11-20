@@ -292,10 +292,10 @@ impl TantivyEngine {
         frame_filter: Option<&[u64]>,
         limit: usize,
     ) -> Result<Vec<TantivyDocHit>> {
-        if let Some(ids) = frame_filter {
-            if ids.is_empty() {
-                return Ok(Vec::new());
-            }
+        if let Some(ids) = frame_filter
+            && ids.is_empty()
+        {
+            return Ok(Vec::new());
         }
 
         let query = query::build_root_query(self, parsed, uri_filter, scope_filter, frame_filter)?;
@@ -406,15 +406,15 @@ impl TantivyEngine {
     }
 
     pub(crate) fn analyse_text(&self, text: &str) -> Vec<String> {
-        if let Some(name) = &self.tokenizer {
-            if let Some(mut analyzer) = self.index.tokenizers().get(name) {
-                let mut stream = analyzer.token_stream(text);
-                let mut tokens = Vec::new();
-                while stream.advance() {
-                    tokens.push(stream.token().text.to_string());
-                }
-                return tokens;
+        if let Some(name) = &self.tokenizer
+            && let Some(mut analyzer) = self.index.tokenizers().get(name)
+        {
+            let mut stream = analyzer.token_stream(text);
+            let mut tokens = Vec::new();
+            while stream.advance() {
+                tokens.push(stream.token().text.to_string());
             }
+            return tokens;
         }
         if text.trim().is_empty() {
             Vec::new()

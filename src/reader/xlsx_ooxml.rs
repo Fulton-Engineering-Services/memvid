@@ -286,7 +286,12 @@ fn collect_sheet_filenames(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<(Stri
     // Match sheet names to worksheet files
     for i in 0..archive.len() {
         if let Ok(file) = archive.by_index(i) {
-            let name = file.name().to_string();
+            // zip 9 can fail to decode an entry name; an entry whose name is
+            // unreadable cannot be matched as a worksheet, so skip it exactly
+            // like the unreadable-entry branches elsewhere in this function.
+            let Ok(name) = file.name() else {
+                continue;
+            };
             if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") {
                 // Extract sheet number from filename (e.g., "sheet1.xml" -> 0)
                 let num_str = name
@@ -297,7 +302,7 @@ fn collect_sheet_filenames(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Vec<(Stri
                         .get(num.saturating_sub(1))
                         .cloned()
                         .unwrap_or_else(|| format!("Sheet{num}"));
-                    sheets.push((display_name, name));
+                    sheets.push((display_name, name.into_owned()));
                 }
             }
         }
@@ -323,10 +328,10 @@ fn parse_workbook_sheet_names(xml: &str) -> Vec<String> {
                 if in_sheets && e.name().as_ref() == b"sheet" =>
             {
                 for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == b"name" {
-                        if let Ok(val) = attr.decode_and_unescape_value(&reader) {
-                            names.push(val.to_string());
-                        }
+                    if attr.key.as_ref() == b"name"
+                        && let Ok(val) = attr.decode_and_unescape_value(&reader)
+                    {
+                        names.push(val.to_string());
                     }
                 }
             }
@@ -383,10 +388,10 @@ fn parse_styles_xml(xml: &str, metadata: &mut OoxmlMetadata) {
                     b"xf" if in_cell_xfs => {
                         let mut num_fmt_id = 0u32;
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"numFmtId" {
-                                if let Ok(v) = attr.decode_and_unescape_value(&reader) {
-                                    num_fmt_id = v.parse::<u32>().unwrap_or(0);
-                                }
+                            if attr.key.as_ref() == b"numFmtId"
+                                && let Ok(v) = attr.decode_and_unescape_value(&reader)
+                            {
+                                num_fmt_id = v.parse::<u32>().unwrap_or(0);
                             }
                         }
                         metadata.cell_xfs.push(num_fmt_id);
@@ -424,17 +429,16 @@ fn parse_merge_cells_xml(xml: &str) -> Vec<MergedRegion> {
                 if in_merge_cells && e.name().as_ref() == b"mergeCell" =>
             {
                 for attr in e.attributes().flatten() {
-                    if attr.key.as_ref() == b"ref" {
-                        if let Ok(val) = attr.decode_and_unescape_value(&reader) {
-                            if let Some(((tr, lc), (br, rc))) = parse_range_ref(&val) {
-                                regions.push(MergedRegion {
-                                    top_row: tr,
-                                    left_col: lc,
-                                    bottom_row: br,
-                                    right_col: rc,
-                                });
-                            }
-                        }
+                    if attr.key.as_ref() == b"ref"
+                        && let Ok(val) = attr.decode_and_unescape_value(&reader)
+                        && let Some(((tr, lc), (br, rc))) = parse_range_ref(&val)
+                    {
+                        regions.push(MergedRegion {
+                            top_row: tr,
+                            left_col: lc,
+                            bottom_row: br,
+                            right_col: rc,
+                        });
                     }
                 }
             }

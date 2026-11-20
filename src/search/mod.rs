@@ -107,15 +107,15 @@ impl DateRange {
     }
 
     pub(crate) fn contains(&self, timestamp: i64) -> bool {
-        if let Some(start) = self.start {
-            if timestamp < start {
-                return false;
-            }
+        if let Some(start) = self.start
+            && timestamp < start
+        {
+            return false;
         }
-        if let Some(end) = self.end {
-            if timestamp > end {
-                return false;
-            }
+        if let Some(end) = self.end
+            && timestamp > end
+        {
+            return false;
         }
         true
     }

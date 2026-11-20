@@ -311,10 +311,10 @@ fn build_table_from_grid(
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        if headers.iter().any(|h| !h.is_empty()) {
-            if let Some(row) = rows.first_mut() {
-                *row = std::mem::take(row).as_header();
-            }
+        if headers.iter().any(|h| !h.is_empty())
+            && let Some(row) = rows.first_mut()
+        {
+            *row = std::mem::take(row).as_header();
         }
     }
 
@@ -505,10 +505,10 @@ fn build_stream_table(
             .collect();
         // Check if first row looks like headers (non-empty, possibly different formatting)
         let non_empty_count = headers.iter().filter(|h| !h.is_empty()).count();
-        if non_empty_count > n_cols / 2 {
-            if let Some(row) = rows.first_mut() {
-                *row = std::mem::take(row).as_header();
-            }
+        if non_empty_count > n_cols / 2
+            && let Some(row) = rows.first_mut()
+        {
+            *row = std::mem::take(row).as_header();
         }
     }
 
@@ -735,10 +735,10 @@ fn detect_table_regions<'a>(
                 options,
             );
 
-            if let Some(r) = region {
-                if r.data_lines.len() >= options.min_rows {
-                    regions.push(r);
-                }
+            if let Some(r) = region
+                && r.data_lines.len() >= options.min_rows
+            {
+                regions.push(r);
             }
 
             i += consumed.max(1);
@@ -760,10 +760,10 @@ fn detect_table_regions<'a>(
                     options,
                 );
 
-                if let Some(r) = region {
-                    if r.data_lines.len() >= options.min_rows {
-                        regions.push(r);
-                    }
+                if let Some(r) = region
+                    && r.data_lines.len() >= options.min_rows
+                {
+                    regions.push(r);
                 }
 
                 i += consumed.max(1);

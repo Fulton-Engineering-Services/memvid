@@ -454,24 +454,22 @@ fn get_page_dimensions(document: &lopdf::Document, page_idx: usize) -> Option<(f
     let pages = document.get_pages();
     let page_id = *pages.get(&u32::try_from(page_idx + 1).unwrap_or(0))?;
 
-    if let Ok(page) = document.get_dictionary(page_id) {
-        if let Ok(media_box) = page.get(b"MediaBox") {
-            if let lopdf::Object::Array(arr) = media_box {
-                if arr.len() >= 4 {
-                    let width = match &arr[2] {
-                        lopdf::Object::Integer(n) => *n as f32,
-                        lopdf::Object::Real(n) => *n,
-                        _ => return None,
-                    };
-                    let height = match &arr[3] {
-                        lopdf::Object::Integer(n) => *n as f32,
-                        lopdf::Object::Real(n) => *n,
-                        _ => return None,
-                    };
-                    return Some((width, height));
-                }
-            }
-        }
+    if let Ok(page) = document.get_dictionary(page_id)
+        && let Ok(media_box) = page.get(b"MediaBox")
+        && let lopdf::Object::Array(arr) = media_box
+        && arr.len() >= 4
+    {
+        let width = match &arr[2] {
+            lopdf::Object::Integer(n) => *n as f32,
+            lopdf::Object::Real(n) => *n,
+            _ => return None,
+        };
+        let height = match &arr[3] {
+            lopdf::Object::Integer(n) => *n as f32,
+            lopdf::Object::Real(n) => *n,
+            _ => return None,
+        };
+        return Some((width, height));
     }
     None
 }
