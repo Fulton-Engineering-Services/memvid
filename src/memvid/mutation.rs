@@ -238,12 +238,12 @@ fn infer_document_format(
 
     // For ZIP-based OOXML formats (DOCX, XLSX, PPTX), magic bytes are just ZIP header
     // so we need to check file extension to distinguish them
-    if let Some(magic_bytes) = magic {
-        if magic_bytes.starts_with(&[0x50, 0x4B, 0x03, 0x04]) {
-            // It's a ZIP file - check extension to determine OOXML type
-            if let Some(format) = infer_format_from_extension(uri) {
-                return Some(format);
-            }
+    if let Some(magic_bytes) = magic
+        && magic_bytes.starts_with(&[0x50, 0x4B, 0x03, 0x04])
+    {
+        // It's a ZIP file - check extension to determine OOXML type
+        if let Some(format) = infer_format_from_extension(uri) {
+            return Some(format);
         }
     }
 
@@ -535,22 +535,22 @@ impl Memvid {
             max_end = max_end.max(descriptor.common.bytes_offset + descriptor.common.bytes_length);
         }
 
-        if let Some(manifest) = self.toc.indexes.lex.as_ref() {
-            if manifest.bytes_length != 0 {
-                max_end = max_end.max(manifest.bytes_offset + manifest.bytes_length);
-            }
+        if let Some(manifest) = self.toc.indexes.lex.as_ref()
+            && manifest.bytes_length != 0
+        {
+            max_end = max_end.max(manifest.bytes_offset + manifest.bytes_length);
         }
 
-        if let Some(manifest) = self.toc.indexes.vec.as_ref() {
-            if manifest.bytes_length != 0 {
-                max_end = max_end.max(manifest.bytes_offset + manifest.bytes_length);
-            }
+        if let Some(manifest) = self.toc.indexes.vec.as_ref()
+            && manifest.bytes_length != 0
+        {
+            max_end = max_end.max(manifest.bytes_offset + manifest.bytes_length);
         }
 
-        if let Some(manifest) = self.toc.time_index.as_ref() {
-            if manifest.bytes_length != 0 {
-                max_end = max_end.max(manifest.bytes_offset + manifest.bytes_length);
-            }
+        if let Some(manifest) = self.toc.time_index.as_ref()
+            && manifest.bytes_length != 0
+        {
+            max_end = max_end.max(manifest.bytes_offset + manifest.bytes_length);
         }
 
         #[cfg(feature = "temporal_track")]
@@ -692,25 +692,25 @@ impl Memvid {
             }
         }
 
-        if let Some(lex) = self.toc.indexes.lex.as_mut() {
-            if lex.bytes_offset != 0 {
-                lex.bytes_offset += delta;
-            }
+        if let Some(lex) = self.toc.indexes.lex.as_mut()
+            && lex.bytes_offset != 0
+        {
+            lex.bytes_offset += delta;
         }
         for manifest in &mut self.toc.indexes.lex_segments {
             if manifest.bytes_offset != 0 {
                 manifest.bytes_offset += delta;
             }
         }
-        if let Some(vec) = self.toc.indexes.vec.as_mut() {
-            if vec.bytes_offset != 0 {
-                vec.bytes_offset += delta;
-            }
+        if let Some(vec) = self.toc.indexes.vec.as_mut()
+            && vec.bytes_offset != 0
+        {
+            vec.bytes_offset += delta;
         }
-        if let Some(time_index) = self.toc.time_index.as_mut() {
-            if time_index.bytes_offset != 0 {
-                time_index.bytes_offset += delta;
-            }
+        if let Some(time_index) = self.toc.time_index.as_mut()
+            && time_index.bytes_offset != 0
+        {
+            time_index.bytes_offset += delta;
         }
         #[cfg(feature = "temporal_track")]
         if let Some(track) = self.toc.temporal_track.as_mut() {
@@ -960,12 +960,12 @@ impl Memvid {
         }
 
         // Persist CLIP index if it has embeddings and wasn't already persisted by rebuild_indexes
-        if !indexes_rebuilt && self.clip_enabled {
-            if let Some(ref clip_index) = self.clip_index {
-                if !clip_index.is_empty() {
-                    self.persist_clip_index()?;
-                }
-            }
+        if !indexes_rebuilt
+            && self.clip_enabled
+            && let Some(ref clip_index) = self.clip_index
+            && !clip_index.is_empty()
+        {
+            self.persist_clip_index()?;
         }
 
         // Persist memories track if it has cards and wasn't already persisted by rebuild_indexes
@@ -1417,22 +1417,20 @@ impl Memvid {
                                 if entry.role == FrameRole::DocumentChunk {
                                     // Look backwards through recently inserted frames
                                     for &candidate_id in delta.inserted_frames.iter().rev() {
-                                        if let Ok(idx) = usize::try_from(candidate_id) {
-                                            if let Some(candidate) = self.toc.frames.get(idx) {
-                                                if candidate.role == FrameRole::Document
-                                                    && candidate.chunk_manifest.is_some()
-                                                {
-                                                    // Found a parent document - use it
-                                                    frame.parent_id = Some(candidate_id);
-                                                    tracing::debug!(
-                                                        chunk_frame_id = frame_id,
-                                                        parent_frame_id = candidate_id,
-                                                        parent_seq = parent_seq,
-                                                        "resolved chunk parent via fallback"
-                                                    );
-                                                    break;
-                                                }
-                                            }
+                                        if let Ok(idx) = usize::try_from(candidate_id)
+                                            && let Some(candidate) = self.toc.frames.get(idx)
+                                            && candidate.role == FrameRole::Document
+                                            && candidate.chunk_manifest.is_some()
+                                        {
+                                            // Found a parent document - use it
+                                            frame.parent_id = Some(candidate_id);
+                                            tracing::debug!(
+                                                chunk_frame_id = frame_id,
+                                                parent_frame_id = candidate_id,
+                                                parent_seq = parent_seq,
+                                                "resolved chunk parent via fallback"
+                                            );
+                                            break;
                                         }
                                     }
                                 }
@@ -1542,15 +1540,13 @@ impl Memvid {
                 }
                 // Find the most recent Document frame before this chunk that has a manifest
                 for candidate_id in (0..frame_id).rev() {
-                    if let Ok(idx) = usize::try_from(candidate_id) {
-                        if let Some(candidate) = self.toc.frames.get(idx) {
-                            if candidate.role == FrameRole::Document
-                                && candidate.chunk_manifest.is_some()
-                                && candidate.status == FrameStatus::Active
-                            {
-                                return Some((frame_id, candidate_id));
-                            }
-                        }
+                    if let Ok(idx) = usize::try_from(candidate_id)
+                        && let Some(candidate) = self.toc.frames.get(idx)
+                        && candidate.role == FrameRole::Document
+                        && candidate.chunk_manifest.is_some()
+                        && candidate.status == FrameStatus::Active
+                    {
+                        return Some((frame_id, candidate_id));
                     }
                 }
                 None
@@ -1559,15 +1555,15 @@ impl Memvid {
 
         // Now apply the resolutions
         for (chunk_id, parent_id) in orphan_resolutions {
-            if let Ok(idx) = usize::try_from(chunk_id) {
-                if let Some(frame) = self.toc.frames.get_mut(idx) {
-                    frame.parent_id = Some(parent_id);
-                    tracing::debug!(
-                        chunk_frame_id = chunk_id,
-                        parent_frame_id = parent_id,
-                        "resolved orphan chunk parent in second pass"
-                    );
-                }
+            if let Ok(idx) = usize::try_from(chunk_id)
+                && let Some(frame) = self.toc.frames.get_mut(idx)
+            {
+                frame.parent_id = Some(parent_id);
+                tracing::debug!(
+                    chunk_frame_id = chunk_id,
+                    parent_frame_id = parent_id,
+                    "resolved orphan chunk parent in second pass"
+                );
             }
         }
 
@@ -1890,13 +1886,13 @@ impl Memvid {
             None => return Ok(false),
         };
 
-        if let Some(existing_dim) = self.effective_vec_index_dimension()? {
-            if existing_dim != artifact.dimension {
-                return Err(MemvidError::VecDimensionMismatch {
-                    expected: existing_dim,
-                    actual: artifact.dimension as usize,
-                });
-            }
+        if let Some(existing_dim) = self.effective_vec_index_dimension()?
+            && existing_dim != artifact.dimension
+        {
+            return Err(MemvidError::VecDimensionMismatch {
+                expected: existing_dim,
+                actual: artifact.dimension as usize,
+            });
         }
 
         let segment_id = self.toc.segment_catalog.next_segment_id;
@@ -2174,11 +2170,11 @@ impl Memvid {
                         if frame.status != FrameStatus::Active {
                             continue;
                         }
-                        if let Some(search_text) = frame.search_text.clone() {
-                            if !search_text.trim().is_empty() {
-                                prepared_docs.push((frame, search_text));
-                                continue;
-                            }
+                        if let Some(search_text) = frame.search_text.clone()
+                            && !search_text.trim().is_empty()
+                        {
+                            prepared_docs.push((frame, search_text));
+                            continue;
                         }
                         let mime = frame
                             .metadata
@@ -2278,27 +2274,27 @@ impl Memvid {
 
         // Persist CLIP index if it has embeddings
         if self.clip_enabled {
-            if let Some(ref clip_index) = self.clip_index {
-                if !clip_index.is_empty() {
-                    let artifact = clip_index.encode()?;
-                    let clip_offset = footer_offset;
-                    self.file.seek(SeekFrom::Start(clip_offset))?;
-                    self.file.write_all(&artifact.bytes)?;
-                    footer_offset += artifact.bytes.len() as u64;
-                    self.toc.indexes.clip = Some(crate::clip::ClipIndexManifest {
-                        bytes_offset: clip_offset,
-                        bytes_length: artifact.bytes.len() as u64,
-                        vector_count: artifact.vector_count,
-                        dimension: artifact.dimension,
-                        checksum: artifact.checksum,
-                        model_name: crate::clip::default_model_info().name.to_string(),
-                    });
-                    tracing::info!(
-                        "rebuild_indexes: persisted CLIP index with {} vectors at offset {}",
-                        artifact.vector_count,
-                        clip_offset
-                    );
-                }
+            if let Some(ref clip_index) = self.clip_index
+                && !clip_index.is_empty()
+            {
+                let artifact = clip_index.encode()?;
+                let clip_offset = footer_offset;
+                self.file.seek(SeekFrom::Start(clip_offset))?;
+                self.file.write_all(&artifact.bytes)?;
+                footer_offset += artifact.bytes.len() as u64;
+                self.toc.indexes.clip = Some(crate::clip::ClipIndexManifest {
+                    bytes_offset: clip_offset,
+                    bytes_length: artifact.bytes.len() as u64,
+                    vector_count: artifact.vector_count,
+                    dimension: artifact.dimension,
+                    checksum: artifact.checksum,
+                    model_name: crate::clip::default_model_info().name.to_string(),
+                });
+                tracing::info!(
+                    "rebuild_indexes: persisted CLIP index with {} vectors at offset {}",
+                    artifact.vector_count,
+                    clip_offset
+                );
             }
         } else {
             self.toc.indexes.clip = None;
@@ -2369,41 +2365,41 @@ impl Memvid {
         crate::persist_header(&mut self.file, &self.header)?;
 
         #[cfg(feature = "lex")]
-        if self.lex_enabled {
-            if let Some(ref engine) = self.tantivy {
-                let doc_count = engine.num_docs();
-                let active_frame_count = self
-                    .toc
-                    .frames
-                    .iter()
-                    .filter(|f| f.status == FrameStatus::Active)
-                    .count();
+        if self.lex_enabled
+            && let Some(ref engine) = self.tantivy
+        {
+            let doc_count = engine.num_docs();
+            let active_frame_count = self
+                .toc
+                .frames
+                .iter()
+                .filter(|f| f.status == FrameStatus::Active)
+                .count();
 
-                // Count frames that would actually be indexed by rebuild_tantivy_engine
-                // Uses the same logic: content-type based check + size limit
-                let text_indexable_count = self
-                    .toc
-                    .frames
-                    .iter()
-                    .filter(|f| crate::memvid::search::is_frame_text_indexable(f))
-                    .count();
+            // Count frames that would actually be indexed by rebuild_tantivy_engine
+            // Uses the same logic: content-type based check + size limit
+            let text_indexable_count = self
+                .toc
+                .frames
+                .iter()
+                .filter(|f| crate::memvid::search::is_frame_text_indexable(f))
+                .count();
 
-                // Only fail if we have text-indexable frames but none got indexed
-                // This avoids false positives for binary files (videos, images)
-                if doc_count == 0 && text_indexable_count > 0 {
-                    return Err(MemvidError::Doctor {
-                        reason: format!(
-                            "Lex index rebuild failed: 0 documents indexed from {text_indexable_count} text-indexable frames. \
+            // Only fail if we have text-indexable frames but none got indexed
+            // This avoids false positives for binary files (videos, images)
+            if doc_count == 0 && text_indexable_count > 0 {
+                return Err(MemvidError::Doctor {
+                    reason: format!(
+                        "Lex index rebuild failed: 0 documents indexed from {text_indexable_count} text-indexable frames. \
                             This indicates a critical failure in the rebuild process."
-                        ),
-                    });
-                }
-
-                // Success! Log it
-                log::info!(
-                    "✓ Doctor lex index rebuild succeeded: {doc_count} docs from {active_frame_count} frames ({text_indexable_count} text-indexable)"
-                );
+                    ),
+                });
             }
+
+            // Success! Log it
+            log::info!(
+                "✓ Doctor lex index rebuild succeeded: {doc_count} docs from {active_frame_count} frames ({text_indexable_count} text-indexable)"
+            );
         }
 
         Ok(())
@@ -3314,18 +3310,18 @@ impl Memvid {
         self.ensure_mutation_allowed()?;
 
         // Deduplication: if enabled and we have payload, check if identical content exists
-        if options.dedup {
-            if let Some(bytes) = payload {
-                let content_hash = hash(bytes);
-                if let Some(existing_frame) = self.find_frame_by_hash(content_hash.as_bytes()) {
-                    // Found existing frame with same content hash, skip ingestion
-                    tracing::debug!(
-                        frame_id = existing_frame.id,
-                        "dedup: skipping ingestion, identical content already exists"
-                    );
-                    // Return existing frame's sequence number (which equals frame_id for committed frames)
-                    return Ok(existing_frame.id);
-                }
+        if options.dedup
+            && let Some(bytes) = payload
+        {
+            let content_hash = hash(bytes);
+            if let Some(existing_frame) = self.find_frame_by_hash(content_hash.as_bytes()) {
+                // Found existing frame with same content hash, skip ingestion
+                tracing::debug!(
+                    frame_id = existing_frame.id,
+                    "dedup: skipping ingestion, identical content already exists"
+                );
+                // Return existing frame's sequence number (which equals frame_id for committed frames)
+                return Ok(existing_frame.id);
             }
         }
 
@@ -3345,12 +3341,12 @@ impl Memvid {
         let incoming_dimension = {
             let mut dim: Option<u32> = None;
 
-            if let Some(ref vector) = embedding {
-                if !vector.is_empty() {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let len = vector.len() as u32;
-                    dim = Some(len);
-                }
+            if let Some(ref vector) = embedding
+                && !vector.is_empty()
+            {
+                #[allow(clippy::cast_possible_truncation)]
+                let len = vector.len() as u32;
+                dim = Some(len);
             }
 
             if let Some(ref vectors) = chunk_embeddings {
@@ -3381,20 +3377,20 @@ impl Memvid {
                 self.enable_vec()?;
             }
 
-            if let Some(existing_dimension) = self.effective_vec_index_dimension()? {
-                if existing_dimension != incoming_dimension {
-                    return Err(MemvidError::VecDimensionMismatch {
-                        expected: existing_dimension,
-                        actual: incoming_dimension as usize,
-                    });
-                }
+            if let Some(existing_dimension) = self.effective_vec_index_dimension()?
+                && existing_dimension != incoming_dimension
+            {
+                return Err(MemvidError::VecDimensionMismatch {
+                    expected: existing_dimension,
+                    actual: incoming_dimension as usize,
+                });
             }
 
             // Persist the dimension early for better auto-detection (even before the next commit).
-            if let Some(manifest) = self.toc.indexes.vec.as_mut() {
-                if manifest.dimension == 0 {
-                    manifest.dimension = incoming_dimension;
-                }
+            if let Some(manifest) = self.toc.indexes.vec.as_mut()
+                && manifest.dimension == 0
+            {
+                manifest.dimension = incoming_dimension;
             }
         }
 
@@ -3601,22 +3597,20 @@ impl Memvid {
         }
 
         if let Some(doc) = &extracted {
-            if need_search_text {
-                if let Some(text) = &doc.text {
-                    if let Some(normalized) =
-                        normalize_text(text, DEFAULT_SEARCH_TEXT_LIMIT).map(|n| n.text)
-                    {
-                        search_text = Some(normalized);
-                    }
-                }
+            if need_search_text
+                && let Some(text) = &doc.text
+                && let Some(normalized) =
+                    normalize_text(text, DEFAULT_SEARCH_TEXT_LIMIT).map(|n| n.text)
+            {
+                search_text = Some(normalized);
             }
 
             // If we don't have a chunk plan from raw bytes (e.g., PDF), try to create one
             // from extracted text. This ensures large documents like PDFs get fully indexed.
-            if chunk_plan.is_none() {
-                if let Some(text) = &doc.text {
-                    chunk_plan = plan_text_chunks(text);
-                }
+            if chunk_plan.is_none()
+                && let Some(text) = &doc.text
+            {
+                chunk_plan = plan_text_chunks(text);
             }
 
             if let Some(mime) = doc.mime_type.as_ref() {
@@ -3633,33 +3627,31 @@ impl Memvid {
 
             // Only add extractous_metadata when auto_tag is enabled
             // This allows callers to disable metadata pollution by setting auto_tag=false
-            if options.auto_tag {
-                if let Some(meta_json) = (!doc.metadata.is_null()).then(|| doc.metadata.to_string())
-                {
-                    extra_metadata
-                        .entry("extractous_metadata".to_string())
-                        .or_insert(meta_json);
-                }
+            if options.auto_tag
+                && let Some(meta_json) = (!doc.metadata.is_null()).then(|| doc.metadata.to_string())
+            {
+                extra_metadata
+                    .entry("extractous_metadata".to_string())
+                    .or_insert(meta_json);
             }
         }
 
-        if options.auto_tag {
-            if let Some(ref text) = search_text {
-                if !text.trim().is_empty() {
-                    let result = AutoTagger.analyse(text, options.extract_dates);
-                    merge_unique(&mut tags, result.tags);
-                    merge_unique(&mut labels, result.labels);
-                    if options.extract_dates && content_dates.is_empty() {
-                        content_dates = result.content_dates;
-                    }
-                }
+        if options.auto_tag
+            && let Some(ref text) = search_text
+            && !text.trim().is_empty()
+        {
+            let result = AutoTagger.analyse(text, options.extract_dates);
+            merge_unique(&mut tags, result.tags);
+            merge_unique(&mut labels, result.labels);
+            if options.extract_dates && content_dates.is_empty() {
+                content_dates = result.content_dates;
             }
         }
 
-        if content_dates.is_empty() {
-            if let Some(frame) = reuse_frame.as_ref() {
-                content_dates = frame.content_dates.clone();
-            }
+        if content_dates.is_empty()
+            && let Some(frame) = reuse_frame.as_ref()
+        {
+            content_dates = frame.content_dates.clone();
         }
 
         let metadata_ref = metadata.as_ref();
@@ -3692,14 +3684,12 @@ impl Memvid {
             parent_chunk_manifest = Some(plan.manifest.clone());
             parent_chunk_count = Some(chunk_total);
 
-            if let Some(first_chunk) = plan.chunks.first() {
-                if let Some(normalized) =
+            if let Some(first_chunk) = plan.chunks.first()
+                && let Some(normalized) =
                     normalize_text(first_chunk, DEFAULT_SEARCH_TEXT_LIMIT).map(|n| n.text)
-                {
-                    if !normalized.trim().is_empty() {
-                        search_text = Some(normalized);
-                    }
-                }
+                && !normalized.trim().is_empty()
+            {
+                search_text = Some(normalized);
             }
 
             let chunk_tags = tags.clone();
@@ -3850,56 +3840,56 @@ impl Memvid {
             let frame_id = parent_seq as FrameId;
 
             // Use triplet_text which was cloned before entry was created
-            if let Some(ref text) = triplet_text {
-                if !text.trim().is_empty() {
-                    // Create temporary frame for indexing (minimal fields for Tantivy)
-                    let temp_frame = Frame {
-                        id: frame_id,
-                        timestamp,
-                        anchor_ts: None,
-                        anchor_source: None,
-                        kind: options.kind.clone(),
-                        track: options.track.clone(),
-                        payload_offset: 0,
-                        payload_length: 0,
-                        checksum: [0u8; 32],
-                        uri: options
-                            .uri
-                            .clone()
-                            .or_else(|| Some(crate::default_uri(frame_id))),
-                        title: options.title.clone(),
-                        canonical_encoding: crate::types::CanonicalEncoding::default(),
-                        canonical_length: None,
-                        metadata: None, // Not needed for text search
-                        search_text: triplet_text.clone(),
-                        tags: instant_index_tags.clone(),
-                        labels: instant_index_labels.clone(),
-                        extra_metadata: std::collections::BTreeMap::new(), // Not needed for search
-                        content_dates: Vec::new(),                         // Not needed for search
-                        chunk_manifest: None,
-                        role: options.role,
-                        parent_id: None,
-                        chunk_index: None,
-                        chunk_count: None,
-                        status: FrameStatus::Active,
-                        supersedes,
-                        superseded_by: None,
-                        source_sha256: None, // Not needed for search
-                        source_path: None,   // Not needed for search
-                        enrichment_state: crate::types::EnrichmentState::Searchable,
-                    };
+            if let Some(ref text) = triplet_text
+                && !text.trim().is_empty()
+            {
+                // Create temporary frame for indexing (minimal fields for Tantivy)
+                let temp_frame = Frame {
+                    id: frame_id,
+                    timestamp,
+                    anchor_ts: None,
+                    anchor_source: None,
+                    kind: options.kind.clone(),
+                    track: options.track.clone(),
+                    payload_offset: 0,
+                    payload_length: 0,
+                    checksum: [0u8; 32],
+                    uri: options
+                        .uri
+                        .clone()
+                        .or_else(|| Some(crate::default_uri(frame_id))),
+                    title: options.title.clone(),
+                    canonical_encoding: crate::types::CanonicalEncoding::default(),
+                    canonical_length: None,
+                    metadata: None, // Not needed for text search
+                    search_text: triplet_text.clone(),
+                    tags: instant_index_tags.clone(),
+                    labels: instant_index_labels.clone(),
+                    extra_metadata: std::collections::BTreeMap::new(), // Not needed for search
+                    content_dates: Vec::new(),                         // Not needed for search
+                    chunk_manifest: None,
+                    role: options.role,
+                    parent_id: None,
+                    chunk_index: None,
+                    chunk_count: None,
+                    status: FrameStatus::Active,
+                    supersedes,
+                    superseded_by: None,
+                    source_sha256: None, // Not needed for search
+                    source_path: None,   // Not needed for search
+                    enrichment_state: crate::types::EnrichmentState::Searchable,
+                };
 
-                    // Get mutable reference to engine and index the frame
-                    if let Some(engine) = self.tantivy.as_mut() {
-                        engine.add_frame(&temp_frame, text)?;
-                        engine.soft_commit()?;
-                        self.tantivy_dirty = true;
+                // Get mutable reference to engine and index the frame
+                if let Some(engine) = self.tantivy.as_mut() {
+                    engine.add_frame(&temp_frame, text)?;
+                    engine.soft_commit()?;
+                    self.tantivy_dirty = true;
 
-                        tracing::debug!(
-                            frame_id = frame_id,
-                            "instant index: frame searchable immediately"
-                        );
-                    }
+                    tracing::debug!(
+                        frame_id = frame_id,
+                        "instant index: frame searchable immediately"
+                    );
                 }
             }
         }
@@ -3943,28 +3933,27 @@ impl Memvid {
 
         // Extract triplets if enabled (default: true)
         // Triplets are stored as MemoryCards with entity/slot/value structure
-        if should_extract_triplets {
-            if let Some(ref text) = triplet_text {
-                if !text.trim().is_empty() {
-                    let extractor = TripletExtractor::default();
-                    let frame_id = parent_seq as FrameId;
-                    let (cards, _stats) = extractor.extract(
-                        frame_id,
-                        text,
-                        triplet_uri.as_deref(),
-                        triplet_title.as_deref(),
-                        timestamp,
-                    );
+        if should_extract_triplets
+            && let Some(ref text) = triplet_text
+            && !text.trim().is_empty()
+        {
+            let extractor = TripletExtractor::default();
+            let frame_id = parent_seq as FrameId;
+            let (cards, _stats) = extractor.extract(
+                frame_id,
+                text,
+                triplet_uri.as_deref(),
+                triplet_title.as_deref(),
+                timestamp,
+            );
 
-                    if !cards.is_empty() {
-                        // Add cards to memories track
-                        let card_ids = self.memories_track.add_cards(cards);
+            if !cards.is_empty() {
+                // Add cards to memories track
+                let card_ids = self.memories_track.add_cards(cards);
 
-                        // Record enrichment for incremental processing
-                        self.memories_track
-                            .record_enrichment(frame_id, "rules", "1.0.0", card_ids);
-                    }
-                }
+                // Record enrichment for incremental processing
+                self.memories_track
+                    .record_enrichment(frame_id, "rules", "1.0.0", card_ids);
             }
         }
 
@@ -4109,22 +4098,22 @@ pub(crate) fn augment_search_text(
         }
     }
 
-    if let Some(title) = title {
-        if !title.trim().is_empty() {
-            segments.push(format!("title: {}", title.trim()));
-        }
+    if let Some(title) = title
+        && !title.trim().is_empty()
+    {
+        segments.push(format!("title: {}", title.trim()));
     }
 
-    if let Some(uri) = uri {
-        if !uri.trim().is_empty() {
-            segments.push(format!("uri: {}", uri.trim()));
-        }
+    if let Some(uri) = uri
+        && !uri.trim().is_empty()
+    {
+        segments.push(format!("uri: {}", uri.trim()));
     }
 
-    if let Some(track) = track {
-        if !track.trim().is_empty() {
-            segments.push(format!("track: {}", track.trim()));
-        }
+    if let Some(track) = track
+        && !track.trim().is_empty()
+    {
+        segments.push(format!("track: {}", track.trim()));
     }
 
     if !tags.is_empty() {
@@ -4148,10 +4137,10 @@ pub(crate) fn augment_search_text(
         segments.push(format!("dates: {}", content_dates.join(" ")));
     }
 
-    if let Some(meta) = metadata {
-        if let Ok(meta_json) = serde_json::to_string(meta) {
-            segments.push(format!("metadata: {meta_json}"));
-        }
+    if let Some(meta) = metadata
+        && let Ok(meta_json) = serde_json::to_string(meta)
+    {
+        segments.push(format!("metadata: {meta_json}"));
     }
 
     if segments.is_empty() {

@@ -320,10 +320,10 @@ impl Memvid {
             if let (Some(width), Some(height)) = (video.width, video.height) {
                 segments.push(format!("{width}x{height}"));
             }
-            if let Some(codec) = &video.codec {
-                if !codec.trim().is_empty() {
-                    segments.push(codec.clone());
-                }
+            if let Some(codec) = &video.codec
+                && !codec.trim().is_empty()
+            {
+                segments.push(codec.clone());
             }
             return Ok(segments.join(" · "));
         }
@@ -343,10 +343,10 @@ impl Memvid {
     pub(crate) fn frame_content(&mut self, frame: &Frame) -> Result<String> {
         // Check search_text first - this handles no_raw mode where payload is empty
         // but search_text contains the indexed content
-        if let Some(search) = &frame.search_text {
-            if !search.is_empty() {
-                return Ok(search.clone());
-            }
+        if let Some(search) = &frame.search_text
+            && !search.is_empty()
+        {
+            return Ok(search.clone());
         }
         if frame.payload_length == 0 && frame.chunk_manifest.is_none() {
             return Ok(String::new());
@@ -399,13 +399,13 @@ impl Memvid {
         }
         let raw = self.read_frame_payload_bytes(frame)?;
         let decoded = crate::decode_canonical_bytes(&raw, frame.canonical_encoding, frame.id)?;
-        if let Some(expected) = frame.canonical_length {
-            if decoded.len() as u64 != expected {
-                return Err(MemvidError::InvalidFrame {
-                    frame_id: frame.id,
-                    reason: "canonical length mismatch",
-                });
-            }
+        if let Some(expected) = frame.canonical_length
+            && decoded.len() as u64 != expected
+        {
+            return Err(MemvidError::InvalidFrame {
+                frame_id: frame.id,
+                reason: "canonical length mismatch",
+            });
         }
         Ok(decoded)
     }
@@ -430,15 +430,14 @@ impl Memvid {
             .metadata
             .as_ref()
             .and_then(|meta| meta.mime.as_deref())
+            && !mime_is_text(meta)
         {
-            if !mime_is_text(meta) {
-                let logical = frame
-                    .canonical_length
-                    .or(Some(frame.payload_length))
-                    .unwrap_or(frame.payload_length);
-                #[allow(clippy::cast_possible_truncation)]
-                return Ok(Self::render_binary_summary(logical as usize));
-            }
+            let logical = frame
+                .canonical_length
+                .or(Some(frame.payload_length))
+                .unwrap_or(frame.payload_length);
+            #[allow(clippy::cast_possible_truncation)]
+            return Ok(Self::render_binary_summary(logical as usize));
         }
 
         let bytes = self.frame_canonical_bytes(frame)?;
@@ -479,13 +478,13 @@ impl Memvid {
         for child in children {
             let raw = self.read_frame_payload_bytes(&child)?;
             let decoded = crate::decode_canonical_bytes(&raw, child.canonical_encoding, child.id)?;
-            if let Some(expected) = child.canonical_length {
-                if decoded.len() as u64 != expected {
-                    return Err(MemvidError::InvalidFrame {
-                        frame_id: child.id,
-                        reason: "chunk canonical length mismatch",
-                    });
-                }
+            if let Some(expected) = child.canonical_length
+                && decoded.len() as u64 != expected
+            {
+                return Err(MemvidError::InvalidFrame {
+                    frame_id: child.id,
+                    reason: "chunk canonical length mismatch",
+                });
             }
             payloads.push((child, decoded));
         }
@@ -557,29 +556,26 @@ impl Memvid {
                 // Try to resolve via parent's chunk manifest (new format)
                 if let Some(parent_id) = frame.parent_id {
                     // Safe frame lookup
-                    if let Ok(index) = usize::try_from(parent_id) {
-                        if let Some(parent) = self.toc.frames.get(index).cloned() {
-                            if parent.chunk_manifest.is_some() {
-                                if let Ok(payloads) = self.document_chunk_payloads(&parent) {
-                                    if let Some(idx) = frame.chunk_index {
-                                        let idx = idx as usize;
-                                        if idx < payloads.len() {
-                                            let mut offset = 0usize;
-                                            for (_, bytes) in payloads.iter().take(idx) {
-                                                offset += bytes.len();
-                                            }
-                                            let (_, bytes) = &payloads[idx];
-                                            let text = String::from_utf8_lossy(bytes).into_owned();
-                                            let end = offset + bytes.len();
-                                            return Ok(ChunkInfo {
-                                                start: offset,
-                                                end,
-                                                text,
-                                            });
-                                        }
-                                    }
-                                }
+                    if let Ok(index) = usize::try_from(parent_id)
+                        && let Some(parent) = self.toc.frames.get(index).cloned()
+                        && parent.chunk_manifest.is_some()
+                        && let Ok(payloads) = self.document_chunk_payloads(&parent)
+                        && let Some(idx) = frame.chunk_index
+                    {
+                        let idx = idx as usize;
+                        if idx < payloads.len() {
+                            let mut offset = 0usize;
+                            for (_, bytes) in payloads.iter().take(idx) {
+                                offset += bytes.len();
                             }
+                            let (_, bytes) = &payloads[idx];
+                            let text = String::from_utf8_lossy(bytes).into_owned();
+                            let end = offset + bytes.len();
+                            return Ok(ChunkInfo {
+                                start: offset,
+                                end,
+                                text,
+                            });
                         }
                     }
                 }

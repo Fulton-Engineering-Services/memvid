@@ -296,10 +296,10 @@ impl EmbeddedWal {
         combined.extend_from_slice(payload);
 
         self.seek_and_write(position, &combined)?;
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            if let Err(err) = self.debug_verify_header(position, sequence, payload.len()) {
-                tracing::warn!(error = %err, "wal header verify failed");
-            }
+        if tracing::enabled!(tracing::Level::DEBUG)
+            && let Err(err) = self.debug_verify_header(position, sequence, payload.len())
+        {
+            tracing::warn!(error = %err, "wal header verify failed");
         }
 
         // Force fsync to ensure data is durable before returning

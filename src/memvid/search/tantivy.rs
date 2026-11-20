@@ -450,16 +450,15 @@ pub fn parse_content_date_to_timestamp(content_dates: &[String]) -> Option<i64> 
 
         // Try year-only: "2024" -> January 1, 2024
         // Only accept reasonable years (1900-2100) to avoid matching employee IDs like "2044"
-        if let Ok(year) = date_str.trim().parse::<i32>() {
-            if (1900..=2100).contains(&year) {
-                if let Some(date) = chrono::NaiveDate::from_ymd_opt(year, 1, 1) {
-                    let ts = date
-                        .and_hms_opt(0, 0, 0)
-                        .map_or(0, |dt| dt.and_utc().timestamp());
-                    if ts > 0 {
-                        best_ts = Some(best_ts.map_or(ts, |prev| prev.max(ts)));
-                    }
-                }
+        if let Ok(year) = date_str.trim().parse::<i32>()
+            && (1900..=2100).contains(&year)
+            && let Some(date) = chrono::NaiveDate::from_ymd_opt(year, 1, 1)
+        {
+            let ts = date
+                .and_hms_opt(0, 0, 0)
+                .map_or(0, |dt| dt.and_utc().timestamp());
+            if ts > 0 {
+                best_ts = Some(best_ts.map_or(ts, |prev| prev.max(ts)));
             }
         }
     }

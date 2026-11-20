@@ -675,17 +675,17 @@ impl Memvid {
             }
 
             // Check as_of_frame filter
-            if let Some(cutoff_frame) = request.as_of_frame {
-                if frame.id > cutoff_frame {
-                    continue;
-                }
+            if let Some(cutoff_frame) = request.as_of_frame
+                && frame.id > cutoff_frame
+            {
+                continue;
             }
 
             // Check as_of_ts filter
-            if let Some(cutoff_ts) = request.as_of_ts {
-                if frame.timestamp > cutoff_ts {
-                    continue;
-                }
+            if let Some(cutoff_ts) = request.as_of_ts
+                && frame.timestamp > cutoff_ts
+            {
+                continue;
             }
 
             matching_ids.push(frame.id);
@@ -889,14 +889,14 @@ impl Memvid {
         };
 
         if needs_rebuild {
-            if let Some(expected) = expected_docs {
-                if actual_docs != 0 || expected != 0 {
-                    tracing::debug!(
-                        "rebuilding Tantivy index: expected {} docs, found {}",
-                        expected,
-                        actual_docs
-                    );
-                }
+            if let Some(expected) = expected_docs
+                && (actual_docs != 0 || expected != 0)
+            {
+                tracing::debug!(
+                    "rebuilding Tantivy index: expected {} docs, found {}",
+                    expected,
+                    actual_docs
+                );
             }
             rebuilt = self.rebuild_tantivy_engine(&mut engine)?;
         }
@@ -1049,11 +1049,11 @@ impl Memvid {
             // Check if frame has explicit search_text first - if so, use it directly
             // This handles frames created via put_bytes() or other APIs that set search_text
             // but don't have text-indexable MIME types
-            if let Some(search_text) = frame.search_text.clone() {
-                if !search_text.trim().is_empty() {
-                    prepared_docs.push((frame, search_text));
-                    continue;
-                }
+            if let Some(search_text) = frame.search_text.clone()
+                && !search_text.trim().is_empty()
+            {
+                prepared_docs.push((frame, search_text));
+                continue;
             }
 
             // Get MIME type from metadata

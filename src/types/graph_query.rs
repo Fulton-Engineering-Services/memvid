@@ -133,20 +133,20 @@ impl GraphPattern {
     pub fn variables(&self) -> Vec<&str> {
         let mut vars = Vec::new();
         for triple in &self.triples {
-            if let Some(v) = triple.subject.variable_name() {
-                if !vars.contains(&v) {
-                    vars.push(v);
-                }
+            if let Some(v) = triple.subject.variable_name()
+                && !vars.contains(&v)
+            {
+                vars.push(v);
             }
-            if let Some(v) = triple.predicate.variable_name() {
-                if !vars.contains(&v) {
-                    vars.push(v);
-                }
+            if let Some(v) = triple.predicate.variable_name()
+                && !vars.contains(&v)
+            {
+                vars.push(v);
             }
-            if let Some(v) = triple.object.variable_name() {
-                if !vars.contains(&v) {
-                    vars.push(v);
-                }
+            if let Some(v) = triple.object.variable_name()
+                && !vars.contains(&v)
+            {
+                vars.push(v);
             }
         }
         vars

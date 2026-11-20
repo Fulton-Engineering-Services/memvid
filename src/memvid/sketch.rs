@@ -238,10 +238,10 @@ impl Memvid {
             simhash_hits += 1;
 
             // Score
-            if let Some(score) = query_sketch.score_entry(entry, opts.hamming_threshold) {
-                if score >= opts.min_score {
-                    candidates.push((entry.frame_id, score));
-                }
+            if let Some(score) = query_sketch.score_entry(entry, opts.hamming_threshold)
+                && score >= opts.min_score
+            {
+                candidates.push((entry.frame_id, score));
             }
         }
 

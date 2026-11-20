@@ -111,10 +111,10 @@ impl Memvid {
 
         // Pre-compute the query embedding once so we can reuse it for vector recall and semantic re-rank
         let mut query_embedding: Option<Vec<f32>> = None;
-        if let Some(embedder) = embedder {
-            if self.vec_enabled || request.mode != AskMode::Lex {
-                query_embedding = Some(embedder.embed_query(&request.question)?);
-            }
+        if let Some(embedder) = embedder
+            && (self.vec_enabled || request.mode != AskMode::Lex)
+        {
+            query_embedding = Some(embedder.embed_query(&request.question)?);
         }
 
         tracing::debug!("ask search query: {}", search_request.query);
@@ -129,44 +129,42 @@ impl Memvid {
         let mut lex_fallback_used = false;
         let mut timeline_fallback_used = false;
         if retrieval.hits.is_empty() {
-            if !primary_tokens.is_empty() {
-                if let Some(or_query) = build_disjunctive_query(&primary_tokens) {
-                    if or_query != search_request.query {
-                        let mut or_request = search_request.clone();
-                        or_request.query = or_query.clone();
-                        let mut or_response = self.search(or_request)?;
-                        self.filter_hits_in_time_range(
-                            &mut or_response.hits,
-                            request.start,
-                            request.end,
-                            &mut or_response.total_hits,
-                        )?;
-                        if !or_response.hits.is_empty() {
-                            retrieval = or_response;
-                            search_request.query = or_query;
-                            lex_fallback_used = true;
-                        }
-                    }
+            if !primary_tokens.is_empty()
+                && let Some(or_query) = build_disjunctive_query(&primary_tokens)
+                && or_query != search_request.query
+            {
+                let mut or_request = search_request.clone();
+                or_request.query = or_query.clone();
+                let mut or_response = self.search(or_request)?;
+                self.filter_hits_in_time_range(
+                    &mut or_response.hits,
+                    request.start,
+                    request.end,
+                    &mut or_response.total_hits,
+                )?;
+                if !or_response.hits.is_empty() {
+                    retrieval = or_response;
+                    search_request.query = or_query;
+                    lex_fallback_used = true;
                 }
             }
-            if retrieval.hits.is_empty() {
-                if let Some(fallback_query) = lexical_fallback_query(&request.question) {
-                    if fallback_query != search_request.query {
-                        let mut fallback_request = search_request.clone();
-                        fallback_request.query = fallback_query.clone();
-                        let mut fallback_response = self.search(fallback_request)?;
-                        self.filter_hits_in_time_range(
-                            &mut fallback_response.hits,
-                            request.start,
-                            request.end,
-                            &mut fallback_response.total_hits,
-                        )?;
-                        if !fallback_response.hits.is_empty() {
-                            retrieval = fallback_response;
-                            search_request.query = fallback_query;
-                            lex_fallback_used = true;
-                        }
-                    }
+            if retrieval.hits.is_empty()
+                && let Some(fallback_query) = lexical_fallback_query(&request.question)
+                && fallback_query != search_request.query
+            {
+                let mut fallback_request = search_request.clone();
+                fallback_request.query = fallback_query.clone();
+                let mut fallback_response = self.search(fallback_request)?;
+                self.filter_hits_in_time_range(
+                    &mut fallback_response.hits,
+                    request.start,
+                    request.end,
+                    &mut fallback_response.total_hits,
+                )?;
+                if !fallback_response.hits.is_empty() {
+                    retrieval = fallback_response;
+                    search_request.query = fallback_query;
+                    lex_fallback_used = true;
                 }
             }
             // Expanded query fallback: try singular/plural variants for better recall
@@ -199,11 +197,10 @@ impl Memvid {
                     &request,
                     &search_request,
                     retrieval.elapsed_ms,
-                ) {
-                    if !timeline_response.hits.is_empty() {
-                        retrieval = timeline_response;
-                        timeline_fallback_used = true;
-                    }
+                ) && !timeline_response.hits.is_empty()
+                {
+                    retrieval = timeline_response;
+                    timeline_fallback_used = true;
                 }
             }
         }
@@ -224,16 +221,15 @@ impl Memvid {
                 &analytical_request,
                 &search_request,
                 retrieval.elapsed_ms,
-            ) {
-                if !timeline_response.hits.is_empty() {
-                    tracing::debug!(
-                        "analytical question: using {} timeline documents (full text) as primary context",
-                        timeline_response.hits.len()
-                    );
-                    // For analytical questions, use ONLY timeline hits (with full text)
-                    // Skip mixing with search hits which have truncated text
-                    candidate_lists.push(timeline_response.hits);
-                }
+            ) && !timeline_response.hits.is_empty()
+            {
+                tracing::debug!(
+                    "analytical question: using {} timeline documents (full text) as primary context",
+                    timeline_response.hits.len()
+                );
+                // For analytical questions, use ONLY timeline hits (with full text)
+                // Skip mixing with search hits which have truncated text
+                candidate_lists.push(timeline_response.hits);
             }
         } else {
             // For non-analytical questions, add search hits to candidate list
@@ -243,20 +239,20 @@ impl Memvid {
         // OR-expanded lexical query even when base has hits to widen recall.
         // Skip for analytical questions - they use timeline directly with full text
         if !is_analytical {
-            if let Some(or_query) = build_disjunctive_query(&primary_tokens) {
-                if or_query != search_request.query {
-                    let mut or_request = search_request.clone();
-                    or_request.query = or_query.clone();
-                    let mut or_response = self.search(or_request)?;
-                    self.filter_hits_in_time_range(
-                        &mut or_response.hits,
-                        request.start,
-                        request.end,
-                        &mut or_response.total_hits,
-                    )?;
-                    if !or_response.hits.is_empty() {
-                        candidate_lists.push(or_response.hits);
-                    }
+            if let Some(or_query) = build_disjunctive_query(&primary_tokens)
+                && or_query != search_request.query
+            {
+                let mut or_request = search_request.clone();
+                or_request.query = or_query.clone();
+                let mut or_response = self.search(or_request)?;
+                self.filter_hits_in_time_range(
+                    &mut or_response.hits,
+                    request.start,
+                    request.end,
+                    &mut or_response.total_hits,
+                )?;
+                if !or_response.hits.is_empty() {
+                    candidate_lists.push(or_response.hits);
                 }
             }
 
@@ -285,14 +281,14 @@ impl Memvid {
             let mut correction_request = search_request.clone();
             correction_request.query = correction_query;
             correction_request.top_k = 10; // Limit to 10 corrections
-            if let Ok(correction_response) = self.search(correction_request) {
-                if !correction_response.hits.is_empty() {
-                    tracing::debug!(
-                        "found {} potential corrections for question",
-                        correction_response.hits.len()
-                    );
-                    candidate_lists.push(correction_response.hits);
-                }
+            if let Ok(correction_response) = self.search(correction_request)
+                && !correction_response.hits.is_empty()
+            {
+                tracing::debug!(
+                    "found {} potential corrections for question",
+                    correction_response.hits.len()
+                );
+                candidate_lists.push(correction_response.hits);
             }
         }
 
@@ -315,10 +311,9 @@ impl Memvid {
                 .hits
                 .iter()
                 .position(|hit| tokens_present_in_hit(hit, &primary_tokens))
+                && best_idx != 0
             {
-                if best_idx != 0 {
-                    retrieval.hits.swap(0, best_idx);
-                }
+                retrieval.hits.swap(0, best_idx);
             }
             retrieval.context = build_context(&retrieval.hits);
         }
@@ -452,15 +447,15 @@ impl Memvid {
                 let effective_ts = self
                     .effective_temporal_timestamp(frame.id, frame.timestamp)
                     .unwrap_or(frame.timestamp);
-                if let Some(start_ts) = start {
-                    if effective_ts < start_ts {
-                        return false;
-                    }
+                if let Some(start_ts) = start
+                    && effective_ts < start_ts
+                {
+                    return false;
                 }
-                if let Some(end_ts) = end {
-                    if effective_ts > end_ts {
-                        return false;
-                    }
+                if let Some(end_ts) = end
+                    && effective_ts > end_ts
+                {
+                    return false;
                 }
                 true
             }
@@ -532,11 +527,11 @@ impl Memvid {
 
         let mut semantic_scores: HashMap<u64, f32> = HashMap::new();
         for hit in hits.iter() {
-            if let Some(embedding) = self.frame_embedding(hit.frame_id)? {
-                if expected_dimension == 0 || embedding.len() == expected_dimension {
-                    let score = cosine_similarity(query_embedding, &embedding);
-                    semantic_scores.insert(hit.frame_id, score);
-                }
+            if let Some(embedding) = self.frame_embedding(hit.frame_id)?
+                && (expected_dimension == 0 || embedding.len() == expected_dimension)
+            {
+                let score = cosine_similarity(query_embedding, &embedding);
+                semantic_scores.insert(hit.frame_id, score);
             }
         }
         if semantic_scores.is_empty() {
@@ -1343,25 +1338,25 @@ fn vector_hits(
     }
 
     // Use adaptive retrieval if configured
-    if let Some(ref adaptive_config) = request.adaptive {
-        if adaptive_config.enabled {
-            let result = memvid.search_adaptive_acl(
-                &request.question,
-                query_embedding,
-                adaptive_config.clone(),
-                request.snippet_chars,
-                request.scope.as_deref(),
-                request.acl_context.as_ref(),
-                request.acl_enforcement_mode,
-            )?;
-            tracing::debug!(
-                "adaptive retrieval: {} -> {} results ({})",
-                result.stats.total_considered,
-                result.stats.returned,
-                result.stats.triggered_by
-            );
-            return Ok(result.results);
-        }
+    if let Some(ref adaptive_config) = request.adaptive
+        && adaptive_config.enabled
+    {
+        let result = memvid.search_adaptive_acl(
+            &request.question,
+            query_embedding,
+            adaptive_config.clone(),
+            request.snippet_chars,
+            request.scope.as_deref(),
+            request.acl_context.as_ref(),
+            request.acl_enforcement_mode,
+        )?;
+        tracing::debug!(
+            "adaptive retrieval: {} -> {} results ({})",
+            result.stats.total_considered,
+            result.stats.returned,
+            result.stats.triggered_by
+        );
+        return Ok(result.results);
     }
 
     let vec_response = memvid.vec_search_with_embedding_acl(
@@ -1444,15 +1439,15 @@ fn promote_corrections(memvid: &mut Memvid, hits: &mut Vec<SearchHit>) -> Result
     let mut corrections: Vec<(usize, i64, f32)> = Vec::new();
     for (idx, hit) in hits.iter().enumerate() {
         // Check if this is a correction by looking at the URI
-        if hit.uri.contains("mv2://correction/") {
-            if let Ok(frame) = memvid.frame_by_id(hit.frame_id) {
-                let boost = frame
-                    .extra_metadata
-                    .get("memvid.correction.boost")
-                    .and_then(|v| v.parse::<f32>().ok())
-                    .unwrap_or(2.0);
-                corrections.push((idx, frame.timestamp, boost));
-            }
+        if hit.uri.contains("mv2://correction/")
+            && let Ok(frame) = memvid.frame_by_id(hit.frame_id)
+        {
+            let boost = frame
+                .extra_metadata
+                .get("memvid.correction.boost")
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(2.0);
+            corrections.push((idx, frame.timestamp, boost));
         }
     }
 
@@ -1528,15 +1523,13 @@ fn promote_temporal_extremes(
     let latest_id = with_ts.last().map(|(_, _, id)| *id);
 
     let mut priority: Vec<u64> = Vec::new();
-    if include_earliest {
-        if let Some(id) = earliest_id {
-            priority.push(id);
-        }
+    if include_earliest && let Some(id) = earliest_id {
+        priority.push(id);
     }
-    if let Some(id) = latest_id {
-        if !priority.contains(&id) {
-            priority.push(id);
-        }
+    if let Some(id) = latest_id
+        && !priority.contains(&id)
+    {
+        priority.push(id);
     }
 
     if priority.is_empty() {
@@ -1547,10 +1540,10 @@ fn promote_temporal_extremes(
     let mut seen: HashSet<u64> = HashSet::new();
 
     for id in priority {
-        if let Some(pos) = hits.iter().position(|hit| hit.frame_id == id) {
-            if seen.insert(id) {
-                reordered.push(hits[pos].clone());
-            }
+        if let Some(pos) = hits.iter().position(|hit| hit.frame_id == id)
+            && seen.insert(id)
+        {
+            reordered.push(hits[pos].clone());
         }
     }
 

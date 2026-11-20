@@ -411,15 +411,13 @@ pub(super) fn enrich_hits_with_entities(hits: &mut [SearchHit], memvid: &Memvid)
         let mut entities = memvid.frame_entities_for_search(hit.frame_id);
 
         // If no entities found and this is a chunk, check the parent frame
-        if entities.is_empty() {
-            if let Some(frame) = usize::try_from(hit.frame_id)
+        if entities.is_empty()
+            && let Some(frame) = usize::try_from(hit.frame_id)
                 .ok()
                 .and_then(|idx| memvid.toc.frames.get(idx))
-            {
-                if let Some(parent_id) = frame.parent_id {
-                    entities = memvid.frame_entities_for_search(parent_id);
-                }
-            }
+            && let Some(parent_id) = frame.parent_id
+        {
+            entities = memvid.frame_entities_for_search(parent_id);
         }
 
         if !entities.is_empty() {

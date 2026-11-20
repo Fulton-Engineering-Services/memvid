@@ -107,11 +107,11 @@ fn extract_plain_text(xml: &str, block_tag: &[u8]) -> String {
                 }
             }
             Ok(Event::Text(t)) => {
-                if let Ok(content) = t.unescape() {
-                    if !content.trim().is_empty() {
-                        text.push_str(content.trim());
-                        text.push(' ');
-                    }
+                if let Ok(content) = t.unescape()
+                    && !content.trim().is_empty()
+                {
+                    text.push_str(content.trim());
+                    text.push(' ');
                 }
             }
             Ok(Event::Eof) => break,

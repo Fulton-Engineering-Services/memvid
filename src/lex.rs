@@ -108,10 +108,9 @@ impl LexIndex {
             .with_limit::<LEX_DECODE_LIMIT>();
         if let Ok((documents, read)) =
             bincode::serde::decode_from_slice::<Vec<LexDocument>, _>(bytes, new_config)
+            && read == bytes.len()
         {
-            if read == bytes.len() {
-                return Ok(Self::from_documents(documents));
-            }
+            return Ok(Self::from_documents(documents));
         }
 
         let legacy_fixed = bincode::config::standard()
@@ -120,11 +119,10 @@ impl LexIndex {
             .with_limit::<LEX_DECODE_LIMIT>();
         if let Ok((legacy_docs, read)) =
             bincode::serde::decode_from_slice::<Vec<LegacyLexDocument>, _>(bytes, legacy_fixed)
+            && read == bytes.len()
         {
-            if read == bytes.len() {
-                let documents = legacy_docs.into_iter().map(legacy_to_current).collect();
-                return Ok(Self::from_documents(documents));
-            }
+            let documents = legacy_docs.into_iter().map(legacy_to_current).collect();
+            return Ok(Self::from_documents(documents));
         }
 
         let legacy_config = bincode::config::standard()
@@ -132,11 +130,10 @@ impl LexIndex {
             .with_limit::<LEX_DECODE_LIMIT>();
         if let Ok((legacy_docs, read)) =
             bincode::serde::decode_from_slice::<Vec<LegacyLexDocument>, _>(bytes, legacy_config)
+            && read == bytes.len()
         {
-            if read == bytes.len() {
-                let documents = legacy_docs.into_iter().map(legacy_to_current).collect();
-                return Ok(Self::from_documents(documents));
-            }
+            let documents = legacy_docs.into_iter().map(legacy_to_current).collect();
+            return Ok(Self::from_documents(documents));
         }
 
         Err(MemvidError::InvalidToc {
@@ -568,11 +565,11 @@ pub(crate) fn compute_snippet_slices(
             continue;
         }
 
-        if let Some(last) = merged.last_mut() {
-            if snippet_start <= last.1 + 20 {
-                last.1 = last.1.max(snippet_end);
-                continue;
-            }
+        if let Some(last) = merged.last_mut()
+            && snippet_start <= last.1 + 20
+        {
+            last.1 = last.1.max(snippet_end);
+            continue;
         }
 
         merged.push((

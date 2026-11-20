@@ -41,10 +41,10 @@ pub(super) fn search_with_lex_fallback(
     let mut evaluated = Vec::new();
     let mut stale_skips = 0u32;
     for matched in &matches {
-        if let Some(filter) = candidate_filter {
-            if !filter.contains(&matched.frame_id) {
-                continue;
-            }
+        if let Some(filter) = candidate_filter
+            && !filter.contains(&matched.frame_id)
+        {
+            continue;
         }
         let Some(frame_meta) = usize::try_from(matched.frame_id)
             .ok()

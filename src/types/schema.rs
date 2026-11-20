@@ -453,18 +453,18 @@ impl SchemaRegistry {
         };
 
         // Validate domain
-        if let Some(kind) = entity_kind {
-            if !schema.allows_entity(kind) {
-                return Err(SchemaError::InvalidDomain {
-                    predicate: predicate.to_string(),
-                    entity_kind: kind.as_str().to_string(),
-                    allowed: schema
-                        .domain
-                        .iter()
-                        .map(|k| k.as_str().to_string())
-                        .collect(),
-                });
-            }
+        if let Some(kind) = entity_kind
+            && !schema.allows_entity(kind)
+        {
+            return Err(SchemaError::InvalidDomain {
+                predicate: predicate.to_string(),
+                entity_kind: kind.as_str().to_string(),
+                allowed: schema
+                    .domain
+                    .iter()
+                    .map(|k| k.as_str().to_string())
+                    .collect(),
+            });
         }
 
         // Validate range

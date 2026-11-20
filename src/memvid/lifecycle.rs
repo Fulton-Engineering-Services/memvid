@@ -860,14 +860,14 @@ impl Memvid {
         ticket: crate::types::Ticket,
     ) -> Result<()> {
         // Check existing binding
-        if let Some(existing) = self.get_memory_binding() {
-            if existing.memory_id != binding.memory_id {
-                return Err(MemvidError::MemoryAlreadyBound {
-                    existing_memory_id: existing.memory_id,
-                    existing_memory_name: existing.memory_name.clone(),
-                    bound_at: existing.bound_at.to_rfc3339(),
-                });
-            }
+        if let Some(existing) = self.get_memory_binding()
+            && existing.memory_id != binding.memory_id
+        {
+            return Err(MemvidError::MemoryAlreadyBound {
+                existing_memory_id: existing.memory_id,
+                existing_memory_name: existing.memory_name.clone(),
+                bound_at: existing.bound_at.to_rfc3339(),
+            });
         }
 
         // Apply ticket for capacity
@@ -893,14 +893,14 @@ impl Memvid {
         self.ensure_writable()?;
 
         // Check existing binding
-        if let Some(existing) = self.get_memory_binding() {
-            if existing.memory_id != binding.memory_id {
-                return Err(MemvidError::MemoryAlreadyBound {
-                    existing_memory_id: existing.memory_id,
-                    existing_memory_name: existing.memory_name.clone(),
-                    bound_at: existing.bound_at.to_rfc3339(),
-                });
-            }
+        if let Some(existing) = self.get_memory_binding()
+            && existing.memory_id != binding.memory_id
+        {
+            return Err(MemvidError::MemoryAlreadyBound {
+                existing_memory_id: existing.memory_id,
+                existing_memory_name: existing.memory_name.clone(),
+                bound_at: existing.bound_at.to_rfc3339(),
+            });
         }
 
         // Store binding in TOC (without applying a ticket)
@@ -1247,10 +1247,10 @@ pub(crate) fn compute_payload_region_end(toc: &Toc, header: &Header) -> u64 {
     let wal_region_end = header.wal_offset.saturating_add(header.wal_size);
     let mut max_end = wal_region_end;
     for frame in &toc.frames {
-        if frame.payload_length != 0 {
-            if let Some(end) = frame.payload_offset.checked_add(frame.payload_length) {
-                max_end = max_end.max(end);
-            }
+        if frame.payload_length != 0
+            && let Some(end) = frame.payload_offset.checked_add(frame.payload_length)
+        {
+            max_end = max_end.max(end);
         }
     }
     max_end
@@ -1314,25 +1314,25 @@ pub(crate) fn compute_data_end(toc: &Toc, header: &Header) -> u64 {
     }
 
     // Global manifests (non-segment storage paths).
-    if let Some(manifest) = toc.indexes.lex.as_ref() {
-        if let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length) {
-            max_end = max_end.max(end);
-        }
+    if let Some(manifest) = toc.indexes.lex.as_ref()
+        && let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length)
+    {
+        max_end = max_end.max(end);
     }
-    if let Some(manifest) = toc.indexes.vec.as_ref() {
-        if let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length) {
-            max_end = max_end.max(end);
-        }
+    if let Some(manifest) = toc.indexes.vec.as_ref()
+        && let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length)
+    {
+        max_end = max_end.max(end);
     }
-    if let Some(manifest) = toc.indexes.clip.as_ref() {
-        if let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length) {
-            max_end = max_end.max(end);
-        }
+    if let Some(manifest) = toc.indexes.clip.as_ref()
+        && let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length)
+    {
+        max_end = max_end.max(end);
     }
-    if let Some(manifest) = toc.time_index.as_ref() {
-        if let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length) {
-            max_end = max_end.max(end);
-        }
+    if let Some(manifest) = toc.time_index.as_ref()
+        && let Some(end) = manifest.bytes_offset.checked_add(manifest.bytes_length)
+    {
+        max_end = max_end.max(end);
     }
     #[cfg(feature = "temporal_track")]
     if let Some(track) = toc.temporal_track.as_ref() {
@@ -1340,20 +1340,20 @@ pub(crate) fn compute_data_end(toc: &Toc, header: &Header) -> u64 {
             max_end = max_end.max(end);
         }
     }
-    if let Some(track) = toc.memories_track.as_ref() {
-        if let Some(end) = track.bytes_offset.checked_add(track.bytes_length) {
-            max_end = max_end.max(end);
-        }
+    if let Some(track) = toc.memories_track.as_ref()
+        && let Some(end) = track.bytes_offset.checked_add(track.bytes_length)
+    {
+        max_end = max_end.max(end);
     }
-    if let Some(mesh) = toc.logic_mesh.as_ref() {
-        if let Some(end) = mesh.bytes_offset.checked_add(mesh.bytes_length) {
-            max_end = max_end.max(end);
-        }
+    if let Some(mesh) = toc.logic_mesh.as_ref()
+        && let Some(end) = mesh.bytes_offset.checked_add(mesh.bytes_length)
+    {
+        max_end = max_end.max(end);
     }
-    if let Some(track) = toc.sketch_track.as_ref() {
-        if let Some(end) = track.bytes_offset.checked_add(track.bytes_length) {
-            max_end = max_end.max(end);
-        }
+    if let Some(track) = toc.sketch_track.as_ref()
+        && let Some(end) = track.bytes_offset.checked_add(track.bytes_length)
+    {
+        max_end = max_end.max(end);
     }
     #[cfg(feature = "replay")]
     if let Some(manifest) = toc.replay_manifest.as_ref() {
@@ -1481,10 +1481,10 @@ pub(crate) fn lex_doc_count(
     lex_storage: &crate::search::EmbeddedLexStorage,
 ) -> Option<u64> {
     // First try old manifest
-    if let Some(manifest) = &toc.indexes.lex {
-        if manifest.doc_count > 0 {
-            return Some(manifest.doc_count);
-        }
+    if let Some(manifest) = &toc.indexes.lex
+        && manifest.doc_count > 0
+    {
+        return Some(manifest.doc_count);
     }
 
     // Then try lex_storage (contains info from lex_segments)

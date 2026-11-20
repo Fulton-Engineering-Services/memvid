@@ -313,13 +313,12 @@ impl QuantizedVecIndex {
             (ProductQuantizer, Vec<QuantizedVecDocument>),
             _,
         >(bytes, config)
+            && read == bytes.len()
         {
-            if read == bytes.len() {
-                return Ok(Self {
-                    quantizer,
-                    documents,
-                });
-            }
+            return Ok(Self {
+                quantizer,
+                documents,
+            });
         }
 
         // Fall back to old format (without dimension field)

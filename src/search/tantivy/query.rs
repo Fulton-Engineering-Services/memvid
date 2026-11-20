@@ -49,14 +49,14 @@ impl QueryPlanner<'_> {
             // Scope filters are evaluated after fetching the documents.
         }
 
-        if let Some(ids) = frame_filter {
-            if !ids.is_empty() {
-                let terms: Vec<Term> = ids
-                    .iter()
-                    .map(|id| Term::from_field_u64(self.engine.frame_id, *id))
-                    .collect();
-                clauses.push((Occur::Must, Box::new(TermSetQuery::new(terms))));
-            }
+        if let Some(ids) = frame_filter
+            && !ids.is_empty()
+        {
+            let terms: Vec<Term> = ids
+                .iter()
+                .map(|id| Term::from_field_u64(self.engine.frame_id, *id))
+                .collect();
+            clauses.push((Occur::Must, Box::new(TermSetQuery::new(terms))));
         }
 
         if clauses.len() == 1 {

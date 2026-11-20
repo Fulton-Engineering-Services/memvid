@@ -112,14 +112,14 @@ pub fn read_track<R: Read + Seek>(
             timestamp,
             frame_id,
         };
-        if let Some(prev_entry) = prev {
-            if entry.timestamp < prev_entry.timestamp
-                || (entry.timestamp == prev_entry.timestamp && entry.frame_id < prev_entry.frame_id)
-            {
-                return Err(MemvidError::InvalidTimeIndex {
-                    reason: "entries not sorted".into(),
-                });
-            }
+        if let Some(prev_entry) = prev
+            && (entry.timestamp < prev_entry.timestamp
+                || (entry.timestamp == prev_entry.timestamp
+                    && entry.frame_id < prev_entry.frame_id))
+        {
+            return Err(MemvidError::InvalidTimeIndex {
+                reason: "entries not sorted".into(),
+            });
         }
         prev = Some(entry);
         entries.push(entry);

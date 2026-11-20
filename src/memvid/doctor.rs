@@ -208,18 +208,18 @@ impl DoctorPlanner {
                     }),
                 });
             }
-            if let Some(toc) = &probe.toc {
-                if header.toc_checksum != toc.toc_checksum {
-                    header_actions.push(DoctorActionPlan {
-                        action: DoctorActionKind::HealTocChecksum,
-                        required: true,
-                        reasons: vec![DoctorFindingCode::HeaderTocChecksumMismatch],
-                        note: Some("update header toc checksum".to_string()),
-                        detail: Some(DoctorActionDetail::TocChecksum {
-                            expected: toc.toc_checksum,
-                        }),
-                    });
-                }
+            if let Some(toc) = &probe.toc
+                && header.toc_checksum != toc.toc_checksum
+            {
+                header_actions.push(DoctorActionPlan {
+                    action: DoctorActionKind::HealTocChecksum,
+                    required: true,
+                    reasons: vec![DoctorFindingCode::HeaderTocChecksumMismatch],
+                    note: Some("update header toc checksum".to_string()),
+                    detail: Some(DoctorActionDetail::TocChecksum {
+                        expected: toc.toc_checksum,
+                    }),
+                });
             }
         }
         if !header_actions.is_empty() {
@@ -1262,11 +1262,11 @@ impl DoctorExecutor {
         metrics.total_duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
         if overall_failed {
-            if let Some(original) = &original_header {
-                if let Ok(mut revert) = Memvid::try_open(&path) {
-                    let _ = crate::persist_header(&mut revert.file, original);
-                    let _ = revert.file.sync_all();
-                }
+            if let Some(original) = &original_header
+                && let Ok(mut revert) = Memvid::try_open(&path)
+            {
+                let _ = crate::persist_header(&mut revert.file, original);
+                let _ = revert.file.sync_all();
             }
         } else if let Some(held) = mem {
             // mem.take() was already called during Verify phase, so this branch won't execute
@@ -1304,18 +1304,17 @@ impl DoctorExecutor {
                 if let Some(DoctorActionDetail::HeaderPointer {
                     target_footer_offset,
                 }) = &action.detail
+                    && mem.header.footer_offset != *target_footer_offset
                 {
-                    if mem.header.footer_offset != *target_footer_offset {
-                        mem.header.footer_offset = *target_footer_offset;
-                        mem.header.toc_checksum = mem.toc.toc_checksum;
-                        crate::persist_header(&mut mem.file, &mem.header)?;
-                        mem.file.sync_all()?;
-                        return Ok(DoctorActionReport {
-                            action: action.action,
-                            status: DoctorActionStatus::Executed,
-                            detail: Some(format!("footer offset set to {target_footer_offset}")),
-                        });
-                    }
+                    mem.header.footer_offset = *target_footer_offset;
+                    mem.header.toc_checksum = mem.toc.toc_checksum;
+                    crate::persist_header(&mut mem.file, &mem.header)?;
+                    mem.file.sync_all()?;
+                    return Ok(DoctorActionReport {
+                        action: action.action,
+                        status: DoctorActionStatus::Executed,
+                        detail: Some(format!("footer offset set to {target_footer_offset}")),
+                    });
                 }
                 Ok(DoctorActionReport {
                     action: action.action,
@@ -1324,17 +1323,17 @@ impl DoctorExecutor {
                 })
             }
             DoctorActionKind::HealTocChecksum => {
-                if let Some(DoctorActionDetail::TocChecksum { expected }) = &action.detail {
-                    if mem.header.toc_checksum != *expected {
-                        mem.header.toc_checksum = *expected;
-                        crate::persist_header(&mut mem.file, &mem.header)?;
-                        mem.file.sync_all()?;
-                        return Ok(DoctorActionReport {
-                            action: action.action,
-                            status: DoctorActionStatus::Executed,
-                            detail: Some("header toc checksum updated".into()),
-                        });
-                    }
+                if let Some(DoctorActionDetail::TocChecksum { expected }) = &action.detail
+                    && mem.header.toc_checksum != *expected
+                {
+                    mem.header.toc_checksum = *expected;
+                    crate::persist_header(&mut mem.file, &mem.header)?;
+                    mem.file.sync_all()?;
+                    return Ok(DoctorActionReport {
+                        action: action.action,
+                        status: DoctorActionStatus::Executed,
+                        detail: Some("header toc checksum updated".into()),
+                    });
                 }
                 Ok(DoctorActionReport {
                     action: action.action,
