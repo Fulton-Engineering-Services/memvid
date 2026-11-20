@@ -39,10 +39,10 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --verbose --locked
 
       - name: Run tests
-        run: cargo test --verbose ${{ runner.os == 'Windows' && '-- --test-threads=1' || '' }}
+        run: cargo test --verbose --locked ${{ runner.os == 'Windows' && '-- --test-threads=1' || '' }}
 
   lint:
     name: Lint
