@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use thiserror::Error;
 
 /// Result alias used throughout the core crate.
@@ -45,7 +47,39 @@ impl LockedError {
     }
 }
 
-/// Canonical error surface for memvid-core.
+/// Why an embedded lexical index cannot honour the store that advertises it.
+///
+/// Surfaced with [`MemvidError::LexIndexIncomplete`]. The variants name the
+/// *class* of fault; callers (the `memvid-kb-rs` service) compose their own
+/// user-facing message from the typed fields rather than forwarding any
+/// sentence produced here.
+///
+/// Non-exhaustive so more specific faults can be added without breaking
+/// exhaustive matches; prose stays out — the variants are the stable strings.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LexIndexFault {
+    /// The committed Tantivy segments could not be materialised or opened, so
+    /// the engine is empty while the segment catalog still advertises them.
+    OpenFailed,
+    /// The catalog's own lexical document count disagrees with the engine.
+    CountDiverged,
+    /// Frames the selection rule wants indexed never reached the engine
+    /// through the put/commit indexing path.
+    PutTimeSkipped,
+}
+
+impl std::fmt::Display for LexIndexFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OpenFailed => f.write_str("segments failed to open"),
+            Self::CountDiverged => f.write_str("catalog count diverged"),
+            Self::PutTimeSkipped => f.write_str("frames never indexed"),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum MemvidError {
     #[error("I/O error: {source}")]
@@ -207,6 +241,36 @@ pub enum MemvidError {
 
     #[error("Model mismatch: Index is bound to '{expected}', but requested model was '{actual}'")]
     ModelMismatch { expected: String, actual: String },
+
+    /// The store advertises an embedded lexical index — its segment catalog
+    /// carries Tantivy segments — but the engine cannot account for the frames
+    /// the selection rule wants indexed. Answering such a store with `Ok` and
+    /// too few rows is a silent wrong answer, so the write path refuses.
+    ///
+    /// The fields are the contract; a caller composes its own message from
+    /// them rather than forwarding this `Display`.
+    ///
+    /// Recovery without losing the store: [`crate::Memvid::vacuum`] rebuilds
+    /// the lexical index from the frames themselves.
+    #[error(
+        "lexical index incomplete: {segments} advertised segment(s) hold {actual_docs} reachable document(s), expected {}",
+        .expected_docs.map_or("unknown".to_owned(), |expected| expected.to_string())
+    )]
+    LexIndexIncomplete {
+        /// Frames the store expects to be lexically reachable, as recorded by
+        /// the catalog itself (its lexical document count, taken from the manifest
+        /// or the embedded index storage header). `Option` because absent is real
+        /// information: `None` means no durable expectation was ever recorded, and
+        /// is never fabricated as `Some(0)`.
+        expected_docs: Option<u64>,
+        /// Documents the engine actually reports, taken from its own document
+        /// count rather than from any catalog bookkeeping.
+        actual_docs: u64,
+        /// Tantivy segments the store advertises.
+        segments: u32,
+        /// Which disagreement was observed.
+        fault: LexIndexFault,
+    },
 
     #[error("Invalid query: {reason}")]
     InvalidQuery { reason: String },

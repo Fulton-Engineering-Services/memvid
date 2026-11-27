@@ -859,9 +859,18 @@ impl Memvid {
                 {
                     Ok(engine) => engine,
                     Err(err) => {
-                        tracing::debug!(
-                            "failed to open embedded Tantivy index: {}, rebuilding",
-                            err
+                        // Deliberately not fatal to `open()`. A hard error here
+                        // would trade "silently partial" for "unopenable", and an
+                        // unopenable store cannot be repaired at all. The engine
+                        // stays empty so reads and the repair path survive, but
+                        // the failure is no longer laundered into success: the
+                        // trust rule below refuses to trust an advertised-but-empty
+                        // index, `Memvid::commit` refuses while the store cannot
+                        // account for its own frames, and `Memvid::vacuum` is the
+                        // recovery that rebuilds it.
+                        tracing::warn!(
+                            "lexical index: embedded Tantivy segments failed to open \
+                             ({err}); continuing with an empty engine"
                         );
                         TantivyEngine::create()?
                     }
@@ -881,23 +890,25 @@ impl Memvid {
         let actual_docs = engine.num_docs();
 
         let has_tantivy_segments = !self.toc.segment_catalog.tantivy_segments.is_empty();
-        let needs_rebuild = if has_tantivy_segments {
-            // Trust existing Tantivy segments, don't rebuild
-            false
-        } else {
-            expected_docs != Some(actual_docs)
-        };
+        // Trust an index only as far as the store can vouch for it. The rule was
+        // `false` whenever any segment was advertised, which made an empty or
+        // partial index permanent: after a failed open advertised the segments it
+        // had just failed to read, nothing ever rebuilt them, and `find` answered
+        // `Ok` with too few rows for the life of the store.
+        let needs_rebuild = crate::memvid::lifecycle::lex_rebuild_required(
+            expected_docs,
+            actual_docs,
+            has_tantivy_segments,
+        );
 
         if needs_rebuild {
-            if let Some(expected) = expected_docs
-                && (actual_docs != 0 || expected != 0)
-            {
-                tracing::debug!(
-                    "rebuilding Tantivy index: expected {} docs, found {}",
-                    expected,
-                    actual_docs
-                );
-            }
+            tracing::warn!(
+                expected_docs = expected_docs
+                    .map_or_else(|| "unknown".to_owned(), |expected| expected.to_string()),
+                actual_docs,
+                advertised_segments = self.toc.segment_catalog.tantivy_segments.len(),
+                "lexical index does not match the store; rebuilding it from the frames"
+            );
             rebuilt = self.rebuild_tantivy_engine(&mut engine)?;
         }
 
@@ -1036,6 +1047,11 @@ pub fn is_frame_text_indexable(frame: &crate::types::Frame) -> bool {
 #[cfg(feature = "lex")]
 impl Memvid {
     pub(crate) fn rebuild_tantivy_engine(&mut self, engine: &mut TantivyEngine) -> Result<bool> {
+        use crate::memvid::lifecycle::{
+            LexFramePlan, lex_derived_text_is_indexable, lex_explicit_text_is_present,
+            lex_frame_plan,
+        };
+
         let mut prepared_docs: Vec<(Frame, String)> = Vec::new();
         let frames = self.toc.frames.clone();
         let active_frames: Vec<_> = frames
@@ -1046,49 +1062,34 @@ impl Memvid {
         let max_payload = max_index_payload();
 
         for frame in active_frames {
-            // Check if frame has explicit search_text first - if so, use it directly
-            // This handles frames created via put_bytes() or other APIs that set search_text
-            // but don't have text-indexable MIME types
-            if let Some(search_text) = frame.search_text.clone()
-                && !search_text.trim().is_empty()
-            {
-                prepared_docs.push((frame, search_text));
-                continue;
+            // The canonical selection rule, shared verbatim with the put path and
+            // both incremental commit paths, so the population this rebuild
+            // produces is exactly the population every other site agrees on.
+            let mime = frame.metadata.as_ref().and_then(|m| m.mime.as_deref());
+            match lex_frame_plan(
+                lex_explicit_text_is_present(frame.search_text.as_deref()),
+                mime,
+                frame.payload_length,
+                max_payload,
+            ) {
+                LexFramePlan::IndexExplicit => {
+                    if let Some(search_text) = frame.search_text.clone() {
+                        prepared_docs.push((frame, search_text));
+                    }
+                }
+                LexFramePlan::DeriveThenIndex => {
+                    let text = self.frame_search_text(&frame)?;
+                    if lex_derived_text_is_indexable(&text) {
+                        prepared_docs.push((frame, text));
+                    }
+                }
+                LexFramePlan::Skip(reason) => {
+                    tracing::debug!(
+                        "skipping frame {} from the lexical index: {reason}",
+                        frame.id
+                    );
+                }
             }
-
-            // Get MIME type from metadata
-            let mime = frame
-                .metadata
-                .as_ref()
-                .and_then(|m| m.mime.as_deref())
-                .unwrap_or("application/octet-stream");
-
-            // Skip binary content types (videos, images, audio, etc.)
-            if !is_text_indexable_mime(mime) {
-                tracing::debug!(
-                    "skipping frame {} - binary content type: {} (not text-indexable)",
-                    frame.id,
-                    mime
-                );
-                continue;
-            }
-
-            // Check payload size limit for text content
-            if frame.payload_length > max_payload {
-                tracing::debug!(
-                    "skipping frame {} - payload {} exceeds max indexable size {} (MEMVID_MAX_INDEX_PAYLOAD)",
-                    frame.id,
-                    frame.payload_length,
-                    max_payload
-                );
-                continue;
-            }
-
-            let text = self.frame_search_text(&frame)?;
-            if text.trim().is_empty() {
-                continue;
-            }
-            prepared_docs.push((frame, text));
         }
 
         if prepared_docs.is_empty() {
@@ -1103,5 +1104,159 @@ impl Memvid {
         }
         engine.commit()?;
         Ok(true)
+    }
+
+    /// The frames the canonical selection rule expects to find in the lexical
+    /// index: active frames it wants indexed, excluding the ones the rule
+    /// legitimately skips (non-text content types, oversized payloads, text that
+    /// is only whitespace).
+    pub(crate) fn lex_indexable_frame_count(&mut self) -> Result<u64> {
+        use crate::memvid::lifecycle::{
+            LexFramePlan, lex_derived_text_is_indexable, lex_explicit_text_is_present,
+            lex_frame_plan,
+        };
+
+        let max_payload = max_index_payload();
+        let frames = self.toc.frames.clone();
+        let mut count = 0u64;
+        for frame in frames
+            .into_iter()
+            .filter(|frame| frame.status == FrameStatus::Active)
+        {
+            let mime = frame.metadata.as_ref().and_then(|m| m.mime.as_deref());
+            match lex_frame_plan(
+                lex_explicit_text_is_present(frame.search_text.as_deref()),
+                mime,
+                frame.payload_length,
+                max_payload,
+            ) {
+                LexFramePlan::IndexExplicit => {
+                    if frame.search_text.is_some() {
+                        count += 1;
+                    }
+                }
+                LexFramePlan::DeriveThenIndex => {
+                    let text = self.frame_search_text(&frame)?;
+                    if lex_derived_text_is_indexable(&text) {
+                        count += 1;
+                    }
+                }
+                LexFramePlan::Skip(_) => {}
+            }
+        }
+        Ok(count)
+    }
+
+    /// Re-run the materialise-and-open that `init_tantivy` performs, purely to
+    /// attribute a refusal: `true` when the advertised segments still cannot be
+    /// opened, which is what makes an empty engine an `OpenFailed` rather than an
+    /// unexplained hole. Diagnostic only — the init path never fails because of
+    /// this.
+    fn tantivy_open_would_fail(&mut self) -> bool {
+        let segments: Vec<EmbeddedLexSegment> = self
+            .toc
+            .segment_catalog
+            .tantivy_segments
+            .iter()
+            .map(|descriptor| EmbeddedLexSegment {
+                path: descriptor.path.clone(),
+                bytes_offset: descriptor.common.bytes_offset,
+                bytes_length: descriptor.common.bytes_length,
+                checksum: descriptor.common.checksum,
+            })
+            .collect();
+        if segments.is_empty() {
+            return false;
+        }
+        match self
+            .materialize_tantivy_segments(&segments)
+            .and_then(TantivyEngine::open_from_dir)
+        {
+            Ok(_) => false,
+            Err(err) => {
+                tracing::debug!("embedded Tantivy segments still cannot be opened: {err}");
+                true
+            }
+        }
+    }
+
+    /// The loud write-path check, run by `Memvid::commit` after the index has
+    /// been brought up to date.
+    ///
+    /// A store that advertises lexical segments must not be committed while its
+    /// engine cannot account for the frames the selection rule wants indexed.
+    /// Returning `Ok` there is what turned a failed open into a permanently wrong
+    /// `find`. The check is a refusal, never a silent repair, and it never makes
+    /// the store unopenable: reads stay available and `Memvid::vacuum` rebuilds
+    /// the index from the frames themselves.
+    ///
+    /// `expected_docs` is the catalog's own claim via
+    /// [`crate::memvid::lifecycle::lex_doc_count`]; `None` means no claim was
+    /// ever recorded, and abstains instead of refusing. `actual_docs` comes only
+    /// from `TantivyEngine::num_docs`.
+    pub(crate) fn verify_lex_index(&mut self) -> Result<()> {
+        use crate::memvid::lifecycle::lex_commit_fault;
+
+        if !self.lex_enabled {
+            return Ok(());
+        }
+        // The advertised-segment count is taken from the catalog, never from the
+        // engine. The whole point of this check is that the store *advertises*
+        // lexical segments it may not be able to honour: an engine-derived count
+        // would be circular, because an engine whose open failed reports zero
+        // segments, which is exactly the signal that makes the store unsafe to
+        // trust, and would silently downgrade `PutTimeSkipped` and `OpenFailed`
+        // to "no opinion". Do not "tidy" this into an engine accessor.
+        let segments =
+            u32::try_from(self.toc.segment_catalog.tantivy_segments.len()).unwrap_or(u32::MAX);
+        if segments == 0 {
+            // Nothing is advertised, so nothing is being claimed.
+            return Ok(());
+        }
+        let Some(engine) = self.tantivy.as_ref() else {
+            return Ok(());
+        };
+        let actual_docs = engine.num_docs();
+        let expected_docs = self
+            .lex_storage
+            .read()
+            .ok()
+            .and_then(|storage| crate::memvid::lifecycle::lex_doc_count(&self.toc, &storage));
+
+        // The frame pass reads payloads, so it runs only for the states that can
+        // produce a refusal: an empty engine, or a catalog count that disagrees
+        // with the engine. A store the catalog agrees with pays nothing.
+        if actual_docs != 0 && expected_docs == Some(actual_docs) {
+            return Ok(());
+        }
+        let indexable_frames = self.lex_indexable_frame_count()?;
+        if indexable_frames == 0 {
+            return Ok(());
+        }
+        let open_failed = self.tantivy_open_would_fail();
+        let Some(fault) = lex_commit_fault(
+            expected_docs,
+            actual_docs,
+            segments,
+            indexable_frames,
+            open_failed,
+        ) else {
+            return Ok(());
+        };
+        tracing::error!(
+            expected_docs =
+                expected_docs.map_or_else(|| "unknown".to_owned(), |expected| expected.to_string()),
+            actual_docs,
+            advertised_segments = segments,
+            indexable_frames,
+            ?fault,
+            "refusing to commit: the lexical index cannot account for the store's frames"
+        );
+        Err(MemvidError::LexIndexIncomplete {
+            expected_docs,
+            actual_docs,
+            segments,
+            fault,
+        })
     }
 }
