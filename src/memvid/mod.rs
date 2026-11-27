@@ -35,4 +35,5 @@ pub use enrichment::{
 };
 pub use frame::BlobReader;
 pub use lifecycle::{LockSettings, Memvid, OpenReadOptions};
+pub use search::LexEngineReport;
 pub use sketch::{SketchCandidate, SketchSearchOptions, SketchSearchStats};

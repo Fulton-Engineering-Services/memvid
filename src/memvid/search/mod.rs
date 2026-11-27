@@ -23,6 +23,8 @@ pub(crate) mod helpers;
 mod lex_incomplete_tests;
 #[cfg(all(test, feature = "lex"))]
 mod lex_integrity_tests;
+#[cfg(all(test, feature = "lex"))]
+mod lex_report_tests;
 #[cfg(feature = "lex")]
 mod tantivy;
 #[cfg(any(feature = "lex", feature = "temporal_track"))]
@@ -30,7 +32,8 @@ mod time_filter;
 
 // Re-export text indexability helpers for use in validation
 pub use api::{
-    DEFAULT_MAX_INDEX_PAYLOAD, is_frame_text_indexable, is_text_indexable_mime, max_index_payload,
+    DEFAULT_MAX_INDEX_PAYLOAD, LexEngineReport, is_frame_text_indexable, is_text_indexable_mime,
+    max_index_payload,
 };
 
 #[cfg(feature = "lex")]

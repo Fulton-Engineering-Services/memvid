@@ -172,8 +172,8 @@ pub use io::wal::{EmbeddedWal, WalRecord, WalStats};
 pub use lex::{LexIndex, LexIndexArtifact, LexIndexBuilder, LexSearchHit};
 pub use lock::FileLock;
 pub use memvid::{
-    BlobReader, EnrichmentHandle, EnrichmentStats, LockSettings, Memvid, OpenReadOptions,
-    SketchCandidate, SketchSearchOptions, SketchSearchStats,
+    BlobReader, EnrichmentHandle, EnrichmentStats, LexEngineReport, LockSettings, Memvid,
+    OpenReadOptions, SketchCandidate, SketchSearchOptions, SketchSearchStats,
     mutation::{CommitMode, CommitOptions},
     start_enrichment_worker, start_enrichment_worker_with_embeddings,
 };
