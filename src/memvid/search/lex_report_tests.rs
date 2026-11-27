@@ -22,8 +22,9 @@
 //!
 //! The last three tests are about cost rather than agreement. The frame pass clones
 //! the frame table and extracts a payload, and the accessor runs it on a state that
-//! is permanently true for image-only stores, so it may run at most once per store
-//! generation and a pass that fails has to be remembered as a failure. `passes`
+//! is permanently true for image-only stores, so it may run at most once per memo key
+//! — `(generation, toc.toc_checksum)` — and a pass that fails has to be remembered as
+//! a failure. `passes`
 //! counts fresh passes, which makes "that second read answered from the memo" a
 //! measurement rather than a statement of intent.
 
@@ -411,14 +412,14 @@ fn lex_engine_report_never_fabricates_a_document_claim() {
     assert!(!gate_refuses(report));
 }
 
-/// One generation, one sweep.
+/// One key, one sweep.
 ///
 /// The accessor's entry condition — an engine standing, segments advertised, engine
 /// empty — is not rare: it is permanently true for exactly the stores that keep
 /// serving queries anyway, an image-only knowledge base or one text frame over
 /// `max_index_payload()`. Those stores pay for `/find` and `/ask` traffic under the
-/// service's single mutex, so a second report in the same generation may not touch
-/// the frame table again.
+/// service's single mutex, so a second report under an unchanged key may not touch the
+/// frame table again.
 #[test]
 fn the_frame_pass_is_memoised_within_one_generation() {
     let dir = TempDir::new().unwrap();
@@ -458,9 +459,9 @@ fn the_frame_pass_is_memoised_within_one_generation() {
 
 /// A commit moves the memo's key.
 ///
-/// Invalidating on `generation` over-invalidates — a commit that never touched a
-/// frame still costs one sweep — and that is the accepted direction: an
-/// under-invalidating cache would serve a count of frames that are no longer there.
+/// Invalidating on the pair over-invalidates — a commit that never touched a frame
+/// still moves `generation` and costs one sweep — and that is the accepted direction:
+/// an under-invalidating cache would serve a count of frames that are no longer there.
 #[test]
 fn a_commit_invalidates_the_frame_pass_memo() {
     let dir = TempDir::new().unwrap();
@@ -471,7 +472,7 @@ fn a_commit_invalidates_the_frame_pass_memo() {
         .expect("a lex-enabled store has an engine report");
     assert_eq!(memoised.indexable_frames, Some(1));
 
-    // A real commit: the path that bumps `generation`.
+    // A real commit: the path that bumps `generation` and rewrites the footer.
     mem.put_bytes_with_options(
         b"payload for the underdrawing marker".as_slice(),
         text_options("mv2://lex-report/underdrawing", "underdrawing"),
@@ -496,7 +497,7 @@ fn a_commit_invalidates_the_frame_pass_memo() {
     assert_eq!(
         passes(&mem),
         1,
-        "the generation moved, so the cached verdict could not have answered"
+        "both halves of the key moved, so the cached verdict could not have answered"
     );
 
     let again = mem
@@ -522,7 +523,7 @@ fn a_failed_frame_pass_is_memoised_as_no_opinion() {
     use crate::error::MemvidError;
 
     let dir = TempDir::new().unwrap();
-    let mut mem = Memvid::create(&dir.path().join("memo-poison.mv2")).unwrap();
+    let mut mem = Memvid::create(dir.path().join("memo-poison.mv2")).unwrap();
     mem.enable_lex().unwrap();
     // No explicit text and no declared content type: the rule wants this frame's text
     // derived from its payload, which is the step that can fail.

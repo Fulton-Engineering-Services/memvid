@@ -1264,8 +1264,8 @@ impl Memvid {
             .and_then(|storage| crate::memvid::lifecycle::lex_doc_count(&self.toc, &storage))
     }
 
-    /// The frame count for the read path, answered from a memo keyed by the store's
-    /// `generation`.
+    /// The frame count for the read path, answered from a memo keyed by the pair
+    /// `(generation, toc.toc_checksum)` read at populate time.
     ///
     /// `None` means "no opinion", and a failure is memoised exactly as a count is: one
     /// unreadable payload makes the whole pass return `Err`, so re-running it per
@@ -1276,21 +1276,51 @@ impl Memvid {
     /// `max_index_payload()`). Those stores serve traffic normally, under the
     /// service's single `Arc<Mutex<MemvidKb>>` held across `.await`.
     ///
-    /// The key is `self.generation` read at populate time. `generation` is bumped by
-    /// every commit and every ticket operation, including ones that never touched a
-    /// frame, so it over-invalidates and never under-invalidates — the safe direction
-    /// for a cache. In particular, if a write path ever populates this memo before its
-    /// own generation bump, the stored key simply will not match the post-bump
-    /// generation and the next reader recomputes once; that single extra sweep is the
-    /// entire cost, so the ordering here is not an optimisation opportunity.
+    /// Each half covers what the other misses, and together they are a floor, not a
+    /// fence.
+    ///
+    /// - `generation` moves only at the commit paths in `memvid::mutation`
+    ///   (`commit_skip_indexes_inner`, `commit_from_records`, `commit_parallel_inner`)
+    ///   and the ticket paths in `memvid::ticket` (`apply_ticket`,
+    ///   `apply_signed_ticket`), which restore it when a staged commit fails. Nothing
+    ///   else writes it, so a commit that touched no frame still costs one sweep.
+    /// - `toc.toc_checksum` hashes the whole encoded TOC, which includes every frame:
+    ///   the offsets, lengths, status and text inputs the selection rule reads.
+    ///   `rewrite_toc_footer` recomputes it on every persistence path — including
+    ///   `vacuum`, `recover_wal` and WAL growth, none of which move `generation`.
+    ///
+    /// A frame-table edit that reached no `rewrite_toc_footer` would move neither half,
+    /// and because the verdict also depends on `data_end` and the file length that
+    /// `validate_frame_bounds` compares, the cost of that is not a count off by one but
+    /// a claim about a bound that has since moved. Every mutating path in this crate
+    /// does reach a footer rewrite before it returns. The one shape that cannot is a
+    /// staged `op` that mutates frames and then fails: rollback puts back the very key
+    /// the verdict was taken under, and the checksum never moved because the op never
+    /// persisted. Both of `with_staging_lock`'s failure arms call
+    /// [`Memvid::invalidate_lex_memo`] for exactly that.
+    ///
+    /// What is left is ordering-specific, and it is why nothing on a write path may
+    /// call this. `commit_from_records` bumps before applying, so a memo populated
+    /// inside its `op` carries the post-bump key and a rollback turns it into a
+    /// harmless miss; the parallel path applies first and bumps after, so the same
+    /// memo keeps the pre-bump key and a rollback leaves it a stale hit. Neither is
+    /// reachable today: this function is the memo's only writer, the read accessor
+    /// above is its only caller, and `verify_lex_index` goes to
+    /// `lex_indexable_frame_count_fresh`, which never populates. No test pins the
+    /// unreachable shape — forcing one would mean driving a failing staged `op` by
+    /// hand through private staging machinery in order to assert an invariant no
+    /// reachable code can violate, so the guard is structural instead: one new caller
+    /// from a write path would make the hazard live, and both failure arms of
+    /// `with_staging_lock` already drop the verdict for it via
+    /// [`Memvid::invalidate_lex_memo`].
     fn lex_indexable_frame_count_memoised(&mut self) -> Option<u64> {
         use crate::memvid::lifecycle::LexIndexablePass;
 
-        let generation = self.generation;
-        if let Some((key, outcome)) = self.lex_indexable_memo {
-            if key == generation {
-                return outcome.count();
-            }
+        let key = (self.generation, self.toc.toc_checksum);
+        if let Some((memo_key, outcome)) = self.lex_indexable_memo
+            && memo_key == key
+        {
+            return outcome.count();
         }
         let outcome = match self.lex_indexable_frame_count_fresh() {
             Ok(count) => LexIndexablePass::Count(count),
@@ -1299,8 +1329,20 @@ impl Memvid {
                 LexIndexablePass::Failed
             }
         };
-        self.lex_indexable_memo = Some((generation, outcome));
+        self.lex_indexable_memo = Some((key, outcome));
         outcome.count()
+    }
+
+    /// Drop the memoised frame-pass verdict without recomputing it.
+    ///
+    /// The named choke point for the one shape the pair key cannot see: a staged `op`
+    /// that mutated the frame table and then failed. `with_staging_lock` restores the
+    /// frame table and `generation`, so the key the verdict was taken under comes back
+    /// identical, and the checksum never moved because the op never persisted. Both of
+    /// its failure arms call this. Nothing else should need it — every mutating path in
+    /// this crate reaches a `rewrite_toc_footer`, which moves the checksum by itself.
+    pub(crate) fn invalidate_lex_memo(&mut self) {
+        self.lex_indexable_memo = None;
     }
 
     /// The embedded engine's own account of itself, for a caller that has to

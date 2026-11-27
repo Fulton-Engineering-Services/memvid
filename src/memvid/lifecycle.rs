@@ -82,11 +82,12 @@ pub struct Memvid {
     pub(crate) tantivy: Option<TantivyEngine>,
     #[cfg(feature = "lex")]
     pub(crate) tantivy_dirty: bool,
-    /// Memoised outcome of the lexical frame pass, keyed by the `generation` at
-    /// which it was computed. Consulted only by the read-side accessor; see
+    /// Memoised outcome of the lexical frame pass, keyed by the
+    /// `(generation, toc.toc_checksum)` pair it was computed against. Consulted
+    /// only by the read-side accessor; see
     /// `Memvid::lex_indexable_frame_count_memoised`.
     #[cfg(feature = "lex")]
-    pub(crate) lex_indexable_memo: Option<(u64, LexIndexablePass)>,
+    pub(crate) lex_indexable_memo: Option<(LexMemoKey, LexIndexablePass)>,
     /// Counts *fresh* frame passes so a test can prove the read path answers from
     /// the memo above rather than re-running one. Bumped only by
     /// `Memvid::lex_indexable_frame_count_fresh`.
@@ -1645,7 +1646,14 @@ pub(crate) fn lex_derived_text_is_indexable(text: &str) -> bool {
     search_text_is_present(Some(text))
 }
 
-/// Outcome of one lexical frame pass, memoised by `generation`.
+/// What a memoised lexical frame pass was computed against: the store's
+/// `generation` and its `toc.toc_checksum`, both read at populate time. Neither
+/// half covers what the other misses — see
+/// `Memvid::lex_indexable_frame_count_memoised`.
+#[cfg(feature = "lex")]
+pub(crate) type LexMemoKey = (u64, [u8; 32]);
+
+/// Outcome of one lexical frame pass, memoised by its [`LexMemoKey`].
 ///
 /// The failure is its own case rather than an `Option<u64>`: a store whose payload
 /// extraction fails on a single frame would otherwise pay the whole sweep — a clone

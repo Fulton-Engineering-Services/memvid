@@ -468,6 +468,12 @@ impl Memvid {
                         {
                             self.tantivy_dirty = original_tantivy_dirty;
                         }
+                        // `op` may have taken a frame-pass verdict and then failed
+                        // after mutating the frame table. Rollback restores both
+                        // halves of the memo key but not the verdict, which is only
+                        // ever written by the accessor. See `invalidate_lex_memo`.
+                        #[cfg(feature = "lex")]
+                        self.invalidate_lex_memo();
                         Err(commit_err)
                     }
                 }
@@ -490,6 +496,9 @@ impl Memvid {
                 {
                     self.tantivy_dirty = original_tantivy_dirty;
                 }
+                // Same reasoning as the commit-failure arm above.
+                #[cfg(feature = "lex")]
+                self.invalidate_lex_memo();
                 Err(err)
             }
         }
