@@ -427,10 +427,12 @@ impl Memvid {
             };
         }
 
-        // Blank is absent here too: this is the deepest derivation, reached by the
-        // rebuild and the instant index as well as by `frame_content`, so accepting
-        // whitespace as authoritative text here would put the same frame in no index
-        // and keep it there.
+        // Blank is absent here too. This is the deepest text derivation in the crate,
+        // and it has exactly two callers: `frame_preview` and `frame_content`;
+        // `frame_search_text` reaches it transitively through `frame_content`. An
+        // unfiltered blank here leaks a blank `frame_content` to every caller and
+        // strands `frame_preview` on an empty preview for a frame that does hold a
+        // payload.
         if let Some(search) = frame.search_text.as_deref()
             && crate::memvid::lifecycle::search_text_is_present(Some(search))
         {

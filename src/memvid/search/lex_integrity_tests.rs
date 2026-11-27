@@ -360,12 +360,16 @@ fn a_store_with_nothing_to_index_is_never_refused() {
 
 /// A blank `search_text` is an absent `search_text` in **both** text accessors.
 ///
-/// `frame_search_text` used to accept `Some("   ")` as authoritative while
-/// `frame_content` derived around it, and the indexing gates refuse to tokenise
-/// whitespace — so a frame in that state was indexed by no path at all, put,
-/// commit, or rebuild, while the frame listing went on advertising it. The fix
-/// is one predicate, [`crate::memvid::lifecycle::search_text_is_present`], that
-/// both accessors consult.
+/// Before this change the four text readers disagreed about blank. At 9228579
+/// `frame_preview`, `frame_canonical_text` and `frame_search_text` each accepted
+/// any `Some(text)` — `Some("   ")` included — and only `frame_content` had a
+/// blank check at all, `!search.is_empty()`, which catches `""` but not
+/// whitespace. So a frame holding `Some("   ")` got `frame_content` to fall
+/// through to `frame_canonical_text`, which handed the blank straight back, while
+/// the indexing gates refused to tokenise whitespace: such a frame belonged to no
+/// index at all — put, commit, or rebuild — while the frame listing went on
+/// advertising it. The fix is one predicate,
+/// [`crate::memvid::lifecycle::search_text_is_present`], that all four consult.
 ///
 /// This is asserted on the accessors rather than through `find`, and the reason
 /// is worth keeping: the blank state is not reachable end-to-end through `put`.
