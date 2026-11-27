@@ -1044,6 +1044,42 @@ pub fn is_frame_text_indexable(frame: &crate::types::Frame) -> bool {
         .is_some_and(|t| !t.trim().is_empty())
 }
 
+/// What the embedded lexical engine can account for, reported without opening it.
+///
+/// Produced by [`Memvid::lex_engine_report`], the read-side counterpart of the
+/// commit gate in `verify_lex_index`. No field is a verdict on its own:
+/// `docs == 0` means "the index holds nothing" only when `loaded` and
+/// `segments_advertised` both hold, because an engine this process never opened
+/// also reports zero for a perfectly healthy store. The five are meant to be read
+/// together, by a caller that has to decide whether to trust the index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LexEngineReport {
+    /// Whether the Tantivy engine is standing in this process — the engine field
+    /// being `Some`, and nothing more. `false` therefore only says this process has
+    /// no engine to ask — lex is off, nothing is advertised, or the advertised
+    /// segments could not be brought up — and is never evidence of an empty index.
+    /// An ordinary open does not imply it either: `init_tantivy` runs on every open
+    /// path, so a store that advertises segments normally reports `true`.
+    pub loaded: bool,
+    /// What the engine itself says it holds, from `TantivyEngine::num_docs` — the
+    /// only source a document count is ever taken from here.
+    pub docs: u64,
+    /// Whether the catalog advertises any Tantivy segment at all. With nothing
+    /// advertised the store claims no index, so `docs == 0` is not a defect.
+    pub segments_advertised: bool,
+    /// The catalog's own claim about how many lexical documents it holds. `None`
+    /// means no claim was ever recorded — which is information, never fabricated
+    /// as `Some(0)`, and abstains rather than refusing.
+    pub expected_docs: Option<u64>,
+    /// How many active frames the selection rule wants indexed.
+    ///
+    /// `None` unless a frame pass actually ran, and one runs only when `loaded`,
+    /// `segments_advertised` and `docs == 0` all hold. `None` is "no opinion",
+    /// never zero — including when the pass itself failed, which the commit gate
+    /// reports as an error instead of a count.
+    pub indexable_frames: Option<u64>,
+}
+
 #[cfg(feature = "lex")]
 impl Memvid {
     pub(crate) fn rebuild_tantivy_engine(&mut self, engine: &mut TantivyEngine) -> Result<bool> {
@@ -1110,19 +1146,36 @@ impl Memvid {
     /// index: active frames it wants indexed, excluding the ones the rule
     /// legitimately skips (non-text content types, oversized payloads, text that
     /// is only whitespace).
-    pub(crate) fn lex_indexable_frame_count(&mut self) -> Result<u64> {
+    ///
+    /// This is the *unmemoised* pass: it clones the frame table and extracts a
+    /// payload for every frame whose text has to be derived. Two callers exist, and
+    /// only the memo below may use it from a request path.
+    pub(crate) fn lex_indexable_frame_count_fresh(&mut self) -> Result<u64> {
+        #[cfg(test)]
+        self.lex_indexable_pass_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         use crate::memvid::lifecycle::{
             LexFramePlan, lex_derived_text_is_indexable, lex_explicit_text_is_present,
             lex_frame_plan,
         };
 
         let max_payload = max_index_payload();
-        let frames = self.toc.frames.clone();
         let mut count = 0u64;
-        for frame in frames
-            .into_iter()
-            .filter(|frame| frame.status == FrameStatus::Active)
-        {
+        // The clone exists only to release the borrow on `self.toc` while
+        // `frame_search_text` takes `&mut self`, so clone one frame at a time instead
+        // of the table: the table carries every frame's `search_text`, and the pass
+        // reads at most one payload per frame it visits.
+        let active: Vec<usize> = self
+            .toc
+            .frames
+            .iter()
+            .enumerate()
+            .filter(|(_, frame)| frame.status == FrameStatus::Active)
+            .map(|(index, _)| index)
+            .collect();
+        for index in active {
+            let frame = self.toc.frames[index].clone();
             let mime = frame.metadata.as_ref().and_then(|m| m.mime.as_deref());
             match lex_frame_plan(
                 lex_explicit_text_is_present(frame.search_text.as_deref()),
@@ -1180,6 +1233,163 @@ impl Memvid {
         }
     }
 
+    /// How many Tantivy segments the catalog advertises. Both callers treat this
+    /// as the store's *claim*; `verify_lex_index` records why the claim must come
+    /// from the catalog and never from the engine.
+    fn lex_advertised_segment_count(&self) -> u32 {
+        u32::try_from(self.toc.segment_catalog.tantivy_segments.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Whether an engine is standing in this process. Deliberately nothing more
+    /// than that: an accessor that opened an engine on demand would report a
+    /// healthy store as empty, and on a failed open would install the very empty
+    /// engine the commit gate exists to refuse.
+    fn lex_engine_loaded(&self) -> bool {
+        self.tantivy.is_some()
+    }
+
+    /// What the standing engine reports for itself, or zero when none is standing
+    /// — which `loaded` already answers, so callers pair the two.
+    fn lex_engine_doc_count(&self) -> u64 {
+        self.tantivy.as_ref().map_or(0, TantivyEngine::num_docs)
+    }
+
+    /// The catalog's own claim about its document count, via
+    /// `crate::memvid::lifecycle::lex_doc_count`. `None` means it records no
+    /// claim at all, which is no opinion rather than an empty index.
+    fn lex_catalog_expected_docs(&self) -> Option<u64> {
+        self.lex_storage
+            .read()
+            .ok()
+            .and_then(|storage| crate::memvid::lifecycle::lex_doc_count(&self.toc, &storage))
+    }
+
+    /// The frame count for the read path, answered from a memo keyed by the pair
+    /// `(generation, toc.toc_checksum)` read at populate time.
+    ///
+    /// `None` means "no opinion", and a failure is memoised exactly as a count is: one
+    /// unreadable payload makes the whole pass return `Err`, so re-running it per
+    /// request would bill a frame-table clone plus a payload sweep to every `/find`
+    /// and `/ask` on a store that can never answer — which is precisely the store
+    /// class where the accessor's `docs == 0` entry condition is permanently true
+    /// (image-only knowledge bases, or a single text frame over
+    /// `max_index_payload()`). Those stores serve traffic normally, under the
+    /// service's single `Arc<Mutex<MemvidKb>>` held across `.await`.
+    ///
+    /// Each half covers what the other misses, and together they are a floor, not a
+    /// fence.
+    ///
+    /// - `generation` moves only at the commit paths in `memvid::mutation`
+    ///   (`commit_skip_indexes_inner`, `commit_from_records`, `commit_parallel_inner`)
+    ///   and the ticket paths in `memvid::ticket` (`apply_ticket`,
+    ///   `apply_signed_ticket`), which restore it when a staged commit fails. Nothing
+    ///   else writes it, so a commit that touched no frame still costs one sweep.
+    /// - `toc.toc_checksum` hashes the whole encoded TOC, which includes every frame:
+    ///   the offsets, lengths, status and text inputs the selection rule reads.
+    ///   `rewrite_toc_footer` recomputes it on every persistence path — including
+    ///   `vacuum`, `recover_wal` and WAL growth, none of which move `generation`.
+    ///
+    /// A frame-table edit that reached no `rewrite_toc_footer` would move neither half,
+    /// and because the verdict also depends on `data_end` and the file length that
+    /// `validate_frame_bounds` compares, the cost of that is not a count off by one but
+    /// a claim about a bound that has since moved. Every mutating path in this crate
+    /// does reach a footer rewrite before it returns. The one shape that cannot is a
+    /// staged `op` that mutates frames and then fails: rollback puts back the very key
+    /// the verdict was taken under, and the checksum never moved because the op never
+    /// persisted. Both of `with_staging_lock`'s failure arms call
+    /// [`Memvid::invalidate_lex_memo`] for exactly that.
+    ///
+    /// What is left is ordering-specific, and it is why nothing on a write path may
+    /// call this. `commit_from_records` bumps before applying, so a memo populated
+    /// inside its `op` carries the post-bump key and a rollback turns it into a
+    /// harmless miss; the parallel path applies first and bumps after, so the same
+    /// memo keeps the pre-bump key and a rollback leaves it a stale hit. Neither is
+    /// reachable today: this function is the memo's only writer, the read accessor
+    /// above is its only caller, and `verify_lex_index` goes to
+    /// `lex_indexable_frame_count_fresh`, which never populates. No test pins the
+    /// unreachable shape — forcing one would mean driving a failing staged `op` by
+    /// hand through private staging machinery in order to assert an invariant no
+    /// reachable code can violate, so the guard is structural instead: one new caller
+    /// from a write path would make the hazard live, and both failure arms of
+    /// `with_staging_lock` already drop the verdict for it via
+    /// [`Memvid::invalidate_lex_memo`].
+    fn lex_indexable_frame_count_memoised(&mut self) -> Option<u64> {
+        use crate::memvid::lifecycle::LexIndexablePass;
+
+        let key = (self.generation, self.toc.toc_checksum);
+        if let Some((memo_key, outcome)) = self.lex_indexable_memo
+            && memo_key == key
+        {
+            return outcome.count();
+        }
+        let outcome = match self.lex_indexable_frame_count_fresh() {
+            Ok(count) => LexIndexablePass::Count(count),
+            Err(err) => {
+                tracing::debug!("lexical frame pass failed, reporting no opinion: {err}");
+                LexIndexablePass::Failed
+            }
+        };
+        self.lex_indexable_memo = Some((key, outcome));
+        outcome.count()
+    }
+
+    /// Drop the memoised frame-pass verdict without recomputing it.
+    ///
+    /// The named choke point for the one shape the pair key cannot see: a staged `op`
+    /// that mutated the frame table and then failed. `with_staging_lock` restores the
+    /// frame table and `generation`, so the key the verdict was taken under comes back
+    /// identical, and the checksum never moved because the op never persisted. Both of
+    /// its failure arms call this. Nothing else should need it — every mutating path in
+    /// this crate reaches a `rewrite_toc_footer`, which moves the checksum by itself.
+    pub(crate) fn invalidate_lex_memo(&mut self) {
+        self.lex_indexable_memo = None;
+    }
+
+    /// The embedded engine's own account of itself, for a caller that has to
+    /// decide whether the lexical index is trustworthy **without opening it**.
+    ///
+    /// `None` means this store has no lexical engine to speak for itself: no
+    /// opinion, never a refusal. Otherwise the fields are the bare facts, and
+    /// [`LexEngineReport`] says what each one does and does not license.
+    ///
+    /// The frame count is withheld outside the one state where it can matter. A
+    /// zero document count is evidence of a lost index only when an engine is
+    /// standing, segments are advertised, and that engine holds nothing — exactly
+    /// the conjunction the commit gate reaches before it will consider refusing,
+    /// and every other state is one the gate itself declines to inspect. Counting
+    /// frames walks the whole frame table and reads a payload for every frame whose
+    /// text has to be derived, and the gate will not pay that for a store the
+    /// catalog agrees with even once per commit; this accessor is meant to be
+    /// called while serving a query, so it pays it nowhere else either: on a memo hit
+    /// it touches no frame table and no payload at all.
+    ///
+    /// A frame pass that fails is reported as `None`, never `Some(0)`: being
+    /// unable to look is not an empty index. The caller that must not confuse the
+    /// two is `verify_lex_index`, which propagates the error instead of abstaining.
+    #[must_use]
+    pub fn lex_engine_report(&mut self) -> Option<LexEngineReport> {
+        if !self.lex_enabled {
+            return None;
+        }
+        let segments = self.lex_advertised_segment_count();
+        let segments_advertised = segments > 0;
+        let loaded = self.lex_engine_loaded();
+        let docs = self.lex_engine_doc_count();
+        let expected_docs = self.lex_catalog_expected_docs();
+        let indexable_frames = if loaded && segments_advertised && docs == 0 {
+            self.lex_indexable_frame_count_memoised()
+        } else {
+            None
+        };
+        Some(LexEngineReport {
+            loaded,
+            docs,
+            segments_advertised,
+            expected_docs,
+            indexable_frames,
+        })
+    }
+
     /// The loud write-path check, run by `Memvid::commit` after the index has
     /// been brought up to date.
     ///
@@ -1207,21 +1417,16 @@ impl Memvid {
         // segments, which is exactly the signal that makes the store unsafe to
         // trust, and would silently downgrade `PutTimeSkipped` and `OpenFailed`
         // to "no opinion". Do not "tidy" this into an engine accessor.
-        let segments =
-            u32::try_from(self.toc.segment_catalog.tantivy_segments.len()).unwrap_or(u32::MAX);
+        let segments = self.lex_advertised_segment_count();
         if segments == 0 {
             // Nothing is advertised, so nothing is being claimed.
             return Ok(());
         }
-        let Some(engine) = self.tantivy.as_ref() else {
+        if !self.lex_engine_loaded() {
             return Ok(());
-        };
-        let actual_docs = engine.num_docs();
-        let expected_docs = self
-            .lex_storage
-            .read()
-            .ok()
-            .and_then(|storage| crate::memvid::lifecycle::lex_doc_count(&self.toc, &storage));
+        }
+        let actual_docs = self.lex_engine_doc_count();
+        let expected_docs = self.lex_catalog_expected_docs();
 
         // The frame pass reads payloads, so it runs only for the states that can
         // produce a refusal: an empty engine, or a catalog count that disagrees
@@ -1229,7 +1434,9 @@ impl Memvid {
         if actual_docs != 0 && expected_docs == Some(actual_docs) {
             return Ok(());
         }
-        let indexable_frames = self.lex_indexable_frame_count()?;
+        // The commit deliberately takes the unmemoised pass: it must never trust a
+        // cached verdict about the frames it has just written.
+        let indexable_frames = self.lex_indexable_frame_count_fresh()?;
         if indexable_frames == 0 {
             return Ok(());
         }
@@ -1258,5 +1465,16 @@ impl Memvid {
             segments,
             fault,
         })
+    }
+}
+
+#[cfg(not(feature = "lex"))]
+impl Memvid {
+    /// A build without the `lex` feature has no lexical engine, so there is no
+    /// opinion to report: always `None`, which a caller reads as "this store makes
+    /// no claim about an index", never as a refusal to trust one.
+    #[must_use]
+    pub fn lex_engine_report(&mut self) -> Option<LexEngineReport> {
+        None
     }
 }
