@@ -328,7 +328,9 @@ impl Memvid {
             return Ok(segments.join(" · "));
         }
 
-        if let Some(search) = &frame.search_text {
+        if let Some(search) = frame.search_text.as_deref()
+            && crate::memvid::lifecycle::search_text_is_present(Some(search))
+        {
             return Ok(crate::truncate_preview(search));
         }
         if frame.payload_length == 0 {
@@ -342,11 +344,14 @@ impl Memvid {
 
     pub(crate) fn frame_content(&mut self, frame: &Frame) -> Result<String> {
         // Check search_text first - this handles no_raw mode where payload is empty
-        // but search_text contains the indexed content
-        if let Some(search) = &frame.search_text
-            && !search.is_empty()
+        // but search_text contains the indexed content. Blank counts as absent —
+        // the same rule the indexing sites apply (`search_text_is_present`), so a
+        // frame whose text is whitespace is read from its payload here too instead
+        // of handing whitespace to every caller.
+        if let Some(search) = frame.search_text.as_deref()
+            && crate::memvid::lifecycle::search_text_is_present(Some(search))
         {
-            return Ok(search.clone());
+            return Ok(search.to_owned());
         }
         if frame.payload_length == 0 && frame.chunk_manifest.is_none() {
             return Ok(String::new());
@@ -422,8 +427,14 @@ impl Memvid {
             };
         }
 
-        if let Some(search) = &frame.search_text {
-            return Ok(search.clone());
+        // Blank is absent here too: this is the deepest derivation, reached by the
+        // rebuild and the instant index as well as by `frame_content`, so accepting
+        // whitespace as authoritative text here would put the same frame in no index
+        // and keep it there.
+        if let Some(search) = frame.search_text.as_deref()
+            && crate::memvid::lifecycle::search_text_is_present(Some(search))
+        {
+            return Ok(search.to_owned());
         }
 
         if let Some(meta) = frame

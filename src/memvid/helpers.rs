@@ -155,8 +155,17 @@ impl Memvid {
     }
 
     pub(crate) fn frame_search_text(&mut self, frame: &Frame) -> Result<String> {
-        if let Some(text) = &frame.search_text {
-            Ok(text.clone())
+        // Blank counts as absent, on the one rule in
+        // `crate::memvid::lifecycle::search_text_is_present`. Accepting
+        // `Some("   ")` as authoritative here is what made such a frame
+        // unindexable: the indexing gates refuse to tokenise whitespace, so the
+        // frame was written by no path — put, commit, or rebuild — while the
+        // frame listing still advertised it. Deriving instead puts its payload
+        // text, plus the label segments, into the index like any other frame.
+        if let Some(text) = frame.search_text.as_deref()
+            && crate::memvid::lifecycle::search_text_is_present(Some(text))
+        {
+            Ok(text.to_owned())
         } else {
             let base = self.frame_content(frame)?;
             Ok(self

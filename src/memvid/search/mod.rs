@@ -19,6 +19,10 @@ mod builders;
 #[cfg(feature = "lex")]
 mod fallback;
 pub(crate) mod helpers;
+#[cfg(all(test, feature = "lex"))]
+mod lex_incomplete_tests;
+#[cfg(all(test, feature = "lex"))]
+mod lex_integrity_tests;
 #[cfg(feature = "lex")]
 mod tantivy;
 #[cfg(any(feature = "lex", feature = "temporal_track"))]

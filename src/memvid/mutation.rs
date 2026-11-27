@@ -757,17 +757,47 @@ impl Memvid {
         if options.background {
             tracing::debug!("commit background flag ignored; running synchronously");
         }
-        let mode = options.mode;
-        let records = self.wal.pending_records()?;
-        if records.is_empty() && !self.dirty && !self.tantivy_index_pending() {
-            return Ok(());
-        }
-        self.with_staging_lock(move |mem| mem.commit_from_records(records, mode))
+        self.commit_impl(options.mode, true)
     }
 
     pub fn commit(&mut self) -> Result<()> {
         self.ensure_writable()?;
-        self.commit_with_options(CommitOptions::new(CommitMode::Full))
+        self.commit_impl(CommitMode::Full, true)
+    }
+
+    /// `commit()` without the lexical refusal, for maintenance paths that rebuild
+    /// the index themselves (`vacuum`). Recovery has to stay reachable on a store
+    /// whose lexical index is precisely what is wrong with it.
+    pub(crate) fn commit_without_lex_verification(&mut self) -> Result<()> {
+        self.ensure_writable()?;
+        self.commit_impl(CommitMode::Full, false)
+    }
+
+    /// The lexical half of `commit()`'s loud guarantee; a no-op without the `lex`
+    /// feature. See [`Memvid::verify_lex_index`](crate::memvid::search::Memvid::verify_lex_index).
+    pub(crate) fn verify_lex_index_on_commit(&mut self) -> Result<()> {
+        #[cfg(feature = "lex")]
+        {
+            self.verify_lex_index()?;
+        }
+        Ok(())
+    }
+
+    fn commit_impl(&mut self, mode: CommitMode, verify_lex: bool) -> Result<()> {
+        let records = self.wal.pending_records()?;
+        if records.is_empty() && !self.dirty && !self.tantivy_index_pending() {
+            if verify_lex {
+                self.verify_lex_index_on_commit()?;
+            }
+            return Ok(());
+        }
+        self.with_staging_lock(move |mem| {
+            mem.commit_from_records(records, mode)?;
+            if verify_lex {
+                mem.verify_lex_index_on_commit()?;
+            }
+            Ok(())
+        })
     }
 
     /// Enter batch mode for high-throughput ingestion.
@@ -1068,6 +1098,9 @@ impl Memvid {
                         // First, collect all frames and their search text (to avoid borrow conflicts)
                         let max_payload = crate::memvid::search::max_index_payload();
                         let mut prepared_docs: Vec<(Frame, String)> = Vec::new();
+                        use crate::memvid::lifecycle::{
+                            LexFramePlan, lex_derived_text_is_indexable, lex_frame_plan,
+                        };
 
                         for frame_id in &delta.inserted_frames {
                             // Look up the actual Frame from the TOC
@@ -1076,33 +1109,30 @@ impl Memvid {
                                 None => continue,
                             };
 
-                            // Check if frame has explicit search_text first - clone it for ownership
-                            let explicit_text = frame.search_text.clone();
-                            if let Some(ref search_text) = explicit_text {
-                                if !search_text.trim().is_empty() {
-                                    prepared_docs.push((frame, search_text.clone()));
-                                    continue;
+                            match lex_frame_plan(
+                                crate::memvid::lifecycle::lex_explicit_text_is_present(
+                                    frame.search_text.as_deref(),
+                                ),
+                                frame.metadata.as_ref().and_then(|m| m.mime.as_deref()),
+                                frame.payload_length,
+                                max_payload,
+                            ) {
+                                LexFramePlan::IndexExplicit => {
+                                    if let Some(search_text) = frame.search_text.clone() {
+                                        prepared_docs.push((frame, search_text));
+                                    }
                                 }
-                            }
-
-                            // Get MIME type and check if text-indexable
-                            let mime = frame
-                                .metadata
-                                .as_ref()
-                                .and_then(|m| m.mime.as_deref())
-                                .unwrap_or("application/octet-stream");
-
-                            if !crate::memvid::search::is_text_indexable_mime(mime) {
-                                continue;
-                            }
-
-                            if frame.payload_length > max_payload {
-                                continue;
-                            }
-
-                            let text = self.frame_search_text(&frame)?;
-                            if !text.trim().is_empty() {
-                                prepared_docs.push((frame, text));
+                                LexFramePlan::DeriveThenIndex => {
+                                    let text = self.frame_search_text(&frame)?;
+                                    if lex_derived_text_is_indexable(&text) {
+                                        prepared_docs.push((frame, text));
+                                    }
+                                }
+                                LexFramePlan::Skip(reason) => {
+                                    tracing::debug!(
+                                        "parallel_commit: skipping frame {frame_id} from the lexical index: {reason}"
+                                    );
+                                }
                             }
                         }
 
@@ -1446,14 +1476,36 @@ impl Memvid {
 
                         #[cfg(feature = "lex")]
                         let index_text = if self.tantivy.is_some() {
-                            if let Some(text) = entry.search_text.clone() {
-                                if text.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(text)
+                            use crate::memvid::lifecycle::{
+                                LexFramePlan, lex_derived_text_is_indexable, lex_frame_plan,
+                            };
+                            // The same selection rule the commit paths apply. It used
+                            // to be applied only there: put indexed any frame whose
+                            // payload decoded as text, so a frame could be findable
+                            // immediately after `put` and then vanish permanently at
+                            // the next commit, which rebuilt the index under the
+                            // stricter rule and never re-admitted it.
+                            let max_payload = crate::memvid::search::max_index_payload();
+                            let mime = frame.metadata.as_ref().and_then(|m| m.mime.as_deref());
+                            match lex_frame_plan(
+                                crate::memvid::lifecycle::lex_explicit_text_is_present(
+                                    entry.search_text.as_deref(),
+                                ),
+                                mime,
+                                frame.payload_length,
+                                max_payload,
+                            ) {
+                                LexFramePlan::IndexExplicit => entry.search_text.clone(),
+                                LexFramePlan::DeriveThenIndex => {
+                                    let text = self.frame_search_text(&frame)?;
+                                    lex_derived_text_is_indexable(&text).then_some(text)
                                 }
-                            } else {
-                                Some(self.frame_content(&frame)?)
+                                LexFramePlan::Skip(reason) => {
+                                    tracing::debug!(
+                                        "put: skipping frame {frame_id} from the lexical index: {reason}"
+                                    );
+                                    None
+                                }
                             }
                         } else {
                             None
@@ -2159,6 +2211,9 @@ impl Memvid {
                     // Collect frames + text first to avoid borrow conflicts with engine.
                     let max_payload = crate::memvid::search::max_index_payload();
                     let mut prepared_docs: Vec<(Frame, String)> = Vec::new();
+                    use crate::memvid::lifecycle::{
+                        LexFramePlan, lex_derived_text_is_indexable, lex_frame_plan,
+                    };
                     for &frame_id in inserted_frame_ids {
                         let Ok(idx) = usize::try_from(frame_id) else {
                             continue;
@@ -2170,26 +2225,30 @@ impl Memvid {
                         if frame.status != FrameStatus::Active {
                             continue;
                         }
-                        if let Some(search_text) = frame.search_text.clone()
-                            && !search_text.trim().is_empty()
-                        {
-                            prepared_docs.push((frame, search_text));
-                            continue;
-                        }
-                        let mime = frame
-                            .metadata
-                            .as_ref()
-                            .and_then(|m| m.mime.as_deref())
-                            .unwrap_or("application/octet-stream");
-                        if !crate::memvid::search::is_text_indexable_mime(mime) {
-                            continue;
-                        }
-                        if frame.payload_length > max_payload {
-                            continue;
-                        }
-                        let text = self.frame_search_text(&frame)?;
-                        if !text.trim().is_empty() {
-                            prepared_docs.push((frame, text));
+                        match lex_frame_plan(
+                            crate::memvid::lifecycle::lex_explicit_text_is_present(
+                                frame.search_text.as_deref(),
+                            ),
+                            frame.metadata.as_ref().and_then(|m| m.mime.as_deref()),
+                            frame.payload_length,
+                            max_payload,
+                        ) {
+                            LexFramePlan::IndexExplicit => {
+                                if let Some(search_text) = frame.search_text.clone() {
+                                    prepared_docs.push((frame, search_text));
+                                }
+                            }
+                            LexFramePlan::DeriveThenIndex => {
+                                let text = self.frame_search_text(&frame)?;
+                                if lex_derived_text_is_indexable(&text) {
+                                    prepared_docs.push((frame, text));
+                                }
+                            }
+                            LexFramePlan::Skip(reason) => {
+                                tracing::debug!(
+                                    "skipping frame {frame_id} from the lexical index: {reason}"
+                                );
+                            }
                         }
                     }
                     if let Some(engine) = self.tantivy.as_mut() {
@@ -3007,7 +3066,11 @@ impl Memvid {
 
 impl Memvid {
     pub fn vacuum(&mut self) -> Result<()> {
-        self.commit()?;
+        // Deliberately not `commit()`: the store that needs vacuuming is exactly
+        // the one whose lexical index cannot account for itself, and the loud
+        // refusal must not kill the route that repairs it. The index is rebuilt
+        // from the frames below and verified afterwards.
+        self.commit_without_lex_verification()?;
 
         let mut active_payloads: HashMap<FrameId, Vec<u8>> = HashMap::new();
         let frames: Vec<Frame> = self
@@ -3070,6 +3133,9 @@ impl Memvid {
         }
 
         self.rebuild_indexes(&[], &[])?;
+        // Vacuum is the documented recovery from `LexIndexIncomplete`, so it
+        // verifies the result instead of merely hoping for it.
+        self.verify_lex_index_on_commit()?;
         self.file.sync_all()?;
         Ok(())
     }
@@ -3655,6 +3721,14 @@ impl Memvid {
         }
 
         let metadata_ref = metadata.as_ref();
+        // The caller's own search text, captured before augmentation folds the
+        // frame's identity (uri, title, tags, dates) into it. The instant-index
+        // gate needs to know whether the caller instructed us to index this text
+        // or whether the store derived it: an instruction outranks the
+        // content-type gate, derived text does not.
+        #[cfg(feature = "lex")]
+        let instant_index_explicit_text =
+            crate::memvid::lifecycle::lex_explicit_text_is_present(search_text.as_deref());
         let mut search_text = augment_search_text(
             search_text,
             options.uri.as_deref(),
@@ -3790,6 +3864,14 @@ impl Memvid {
         let needs_enrichment =
             options.instant_index && (options.enable_embedding || is_skim_extraction);
         #[cfg(feature = "lex")]
+        let instant_index_mime = if options.instant_index {
+            metadata.as_ref().and_then(|meta| meta.mime.clone())
+        } else {
+            None
+        };
+        #[cfg(feature = "lex")]
+        let instant_index_payload_length = u64::try_from(storage_payload.len()).unwrap_or(u64::MAX);
+        #[cfg(feature = "lex")]
         let enrichment_state = if needs_enrichment {
             crate::types::EnrichmentState::Searchable
         } else {
@@ -3840,7 +3922,40 @@ impl Memvid {
             let frame_id = parent_seq as FrameId;
 
             // Use triplet_text which was cloned before entry was created
-            if let Some(ref text) = triplet_text
+            //
+            // The canonical selection rule, asked with the only honest input this
+            // site can have: the caller's raw search text, captured above before
+            // `augment_search_text` folded the frame's identity into it. This site
+            // used to index anything with non-blank derived text, with no
+            // content-type and no payload-size check, so a frame could be findable
+            // the moment it was put and then disappear for good at the next commit,
+            // which applied the stricter rule — permanently, because the advertised
+            // segments suppressed any later rebuild.
+            //
+            // Note that this is the one site that can honour the mime and size gates
+            // for an unlabelled blob: the commit and rebuild sites ask the same rule
+            // about the frame's *augmented* text, so a titled or uri'd frame reaches
+            // them as an explicit instruction and is indexed regardless. See
+            // `LexFramePlan` in lifecycle.rs.
+            let index_this_frame = match crate::memvid::lifecycle::lex_frame_plan(
+                instant_index_explicit_text,
+                instant_index_mime.as_deref(),
+                instant_index_payload_length,
+                crate::memvid::search::max_index_payload(),
+            ) {
+                crate::memvid::lifecycle::LexFramePlan::Skip(reason) => {
+                    tracing::debug!(
+                        frame_id,
+                        "instant index: leaving frame out of the lexical index: {reason}"
+                    );
+                    false
+                }
+                crate::memvid::lifecycle::LexFramePlan::IndexExplicit
+                | crate::memvid::lifecycle::LexFramePlan::DeriveThenIndex => true,
+            };
+
+            if index_this_frame
+                && let Some(text) = &triplet_text
                 && !text.trim().is_empty()
             {
                 // Create temporary frame for indexing (minimal fields for Tantivy)

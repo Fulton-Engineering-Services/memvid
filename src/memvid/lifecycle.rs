@@ -1499,6 +1499,213 @@ pub(crate) fn lex_doc_count(
     None
 }
 
+/// What the canonical lexical selection rule decides about one frame.
+///
+/// There is exactly one *definition* of which active frames the embedded lexical
+/// index is expected to hold: every indexing site — put-time indexing in
+/// `apply_records`, the instant-index path, both incremental commit paths, and
+/// the full rebuild in `Memvid::rebuild_tantivy_engine` — asks this and nothing
+/// else, so the mime and size gates can no longer disagree with each other.
+///
+/// The sites do not all hand it the same `has_explicit_search_text`, and that is
+/// a known, deliberate limit of this change, not an accident: only the put path
+/// ever sees the caller's raw `search_text`. The frame itself stores the
+/// *augmented* text (`augment_search_text` folds `title:`/`uri:`/`track:`/`tags:`
+/// into it), so at the commit and rebuild sites any frame with a title or a uri
+/// reads as explicit and takes [`LexFramePlan::IndexExplicit`], bypassing the
+/// mime and size gates exactly as it did before this change. Persisting the
+/// caller's instruction on the frame (a `#[serde(default)] search_text_explicit`
+/// flag, set from the value the put path already captures) is the follow-up that
+/// would make the input as well as the rule common.
+#[cfg(feature = "lex")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LexFramePlan {
+    /// Index the frame with the caller's explicit `search_text`. An explicit
+    /// search text is an instruction: it indexes the frame even when the payload
+    /// itself would be excluded by the mime or size gate, because it — not the
+    /// payload — is what gets tokenised.
+    IndexExplicit,
+    /// Index the frame with its derived searchable text.
+    DeriveThenIndex,
+    /// Never index this frame. `reason` is for the trace log only; it is never
+    /// part of an error surface.
+    Skip(&'static str),
+}
+
+/// Whether a search text is non-blank, which the rule treats as an instruction
+/// rather than as content.
+///
+/// This is only a test for *caller* instruction where the caller's raw text is
+/// still in scope — the put path, which captures it before `augment_search_text`
+/// runs. The instant-index path must not infer it from the text it has on hand,
+/// because the only text that path ever held is text the store derived and
+/// augmented itself, and derived text is not an instruction. The commit and
+/// rebuild sites apply it to the frame's stored (augmented) text, so there it
+/// reports true for any frame with a title or a uri; that preserves the
+/// pre-change population rather than silently making such frames unsearchable.
+#[cfg(feature = "lex")]
+#[must_use]
+pub(crate) fn lex_explicit_text_is_present(search_text: Option<&str>) -> bool {
+    search_text_is_present(search_text)
+}
+
+/// Whether a search text carries anything to tokenise. **Blank means absent**:
+/// `Some("   ")` is the same instruction as `None`, and a caller that supplies
+/// it gets text derived from the payload, exactly as a caller who supplied
+/// nothing.
+///
+/// This is the one definition of that rule. `Memvid::frame_content`,
+/// `Memvid::frame_search_text`, the put paths, both incremental commit paths,
+/// the full rebuild, and the commit gate all go through it. Before it existed
+/// the two accessors disagreed about blank — one accepted `Some("   ")` as
+/// authoritative, the other derived around it — while the indexing gates
+/// refused to tokenise whitespace at all, so such a frame was indexed by
+/// neither path and no error ever reported the hole.
+#[must_use]
+pub(crate) fn search_text_is_present(text: Option<&str>) -> bool {
+    text.is_some_and(|text| !text.trim().is_empty())
+}
+
+/// The canonical lexical selection rule: explicit search text first, then the
+/// content-type gate, then the payload-size gate. Every indexing site — put-time
+/// indexing in `apply_records`, the instant-index path, both incremental commit
+/// paths, and the full rebuild — asks this and nothing else, so the gates can no
+/// longer disagree with one another.
+///
+/// Put-time indexing used to look only for an explicit `search_text`, while the
+/// commit and rebuild gates also applied the content-type and payload-size
+/// limits. A frame whose payload merely decoded as text was therefore carried
+/// into the index by the pending entry `put` created and then dropped the first
+/// time the index was rebuilt from the frames — permanently, because advertised
+/// segments suppressed every rebuild after that. One rule removes the axis: a
+/// frame the rule wants indexed is indexed by every site, and a frame it skips
+/// is skipped by every site.
+///
+/// A frame that **declares** a non-text content type is excluded; a frame with
+/// no declared content type is not. That asymmetry is a deliberate back-compat
+/// decision and the load-bearing line in this function for stores written before
+/// it existed: the old put path had no content-type gate at all, so those stores
+/// already hold mime-less frames in their embedded index and their manifests
+/// advertise them. Skipping those frames at rebuild would drive the engine below
+/// the count the store itself claims, and the commit gate would read that
+/// disagreement as a fault — refusing a store that was healthy before the
+/// upgrade. Over-refusing is the one outcome this change must not produce;
+/// under-refusing is the accepted direction of error. Pinned by
+/// `lex_integrity_tests::a_frame_with_no_declared_content_type_survives_reopen_and_commit`.
+#[cfg(feature = "lex")]
+pub(crate) fn lex_frame_plan(
+    has_explicit_search_text: bool,
+    mime: Option<&str>,
+    payload_length: u64,
+    max_payload: u64,
+) -> LexFramePlan {
+    if has_explicit_search_text {
+        return LexFramePlan::IndexExplicit;
+    }
+    // An undeclared content type is not evidence of opacity — see the
+    // back-compat note above. Only a *declared* non-text type excludes a frame.
+    let Some(mime) = mime else {
+        return LexFramePlan::DeriveThenIndex;
+    };
+    if !crate::memvid::search::is_text_indexable_mime(mime) {
+        return LexFramePlan::Skip("content type is not text-indexable");
+    }
+    if payload_length > max_payload {
+        return LexFramePlan::Skip("payload exceeds max indexable size");
+    }
+    LexFramePlan::DeriveThenIndex
+}
+
+/// Final gate shared by every indexing site: text that is only whitespace
+/// carries nothing to tokenise.
+#[cfg(feature = "lex")]
+pub(crate) fn lex_derived_text_is_indexable(text: &str) -> bool {
+    search_text_is_present(Some(text))
+}
+
+/// Whether the embedded engine must be rebuilt from the frames before it can be
+/// trusted.
+///
+/// Trust an index only when the catalog can vouch for it (`expected` agrees with
+/// the engine) or when it advertises segments we cannot count but which are
+/// demonstrably not empty. An index that advertises segments while reporting zero
+/// documents is a laundered failed open — the segments were never read — and is
+/// rebuilt rather than trusted.
+#[cfg(feature = "lex")]
+pub(crate) fn lex_rebuild_required(
+    expected_docs: Option<u64>,
+    actual_docs: u64,
+    segments_advertised: bool,
+) -> bool {
+    match expected_docs {
+        Some(expected) => expected != actual_docs,
+        // Nothing advertised: with no evidence at all the index is rebuilt, as
+        // before.
+        None if !segments_advertised => true,
+        // Segments advertised with no manifest behind them: the one thing we can
+        // check is that the engine is not empty.
+        None => actual_docs == 0,
+    }
+}
+
+/// The loud write-path check: whether committing this store would launder a
+/// lexical index that cannot account for the store's own frames.
+///
+/// A missing expectation is **not** a fault: `expected_docs == None` means the
+/// catalog never recorded a count, so it yields no opinion and never a refusal
+/// (only a known disagreement does). A store with nothing to index is healthy.
+/// No comparison of a raw frame count against the engine is ever made here —
+/// `indexable_frames` is the count of frames the selection rule wants indexed,
+/// which excludes the frames the rule legitimately skips.
+///
+/// `actual_docs` comes only from `TantivyEngine::num_docs()`.
+///
+/// When more than one symptom is present the faults are reported in the total
+/// order **`OpenFailed` > `PutTimeSkipped` > `CountDiverged`**. An engine that
+/// cannot open explains every downstream count, so it outranks both; among the
+/// count symptoms, "segments advertised and the engine demonstrably empty" is
+/// the more specific diagnosis than "the engine disagrees with the catalog's own
+/// count", and it is the symptom this defect produced. All three map to one
+/// error and one recovery, so the order changes only which diagnosis an
+/// operator reads — never whether the commit is refused. It is pinned row by row
+/// in `lex_incomplete_tests::commit_fault_decision_table`.
+#[cfg(feature = "lex")]
+pub(crate) fn lex_commit_fault(
+    expected_docs: Option<u64>,
+    actual_docs: u64,
+    segments: u32,
+    indexable_frames: u64,
+    open_failed: bool,
+) -> Option<crate::error::LexIndexFault> {
+    use crate::error::LexIndexFault;
+
+    // Nothing to index, or nothing advertised: nothing is being claimed, so
+    // nothing can contradict it.
+    if indexable_frames == 0 || segments == 0 {
+        return None;
+    }
+    // A recorded failed open explains an empty engine on its own, and is the
+    // most specific thing we know.
+    if open_failed && actual_docs == 0 {
+        return Some(LexIndexFault::OpenFailed);
+    }
+    // Segments advertised, the engine demonstrably empty, and frames the rule
+    // wants indexed: the indexing path never wrote them. This outranks the
+    // catalog's own count, because `Some(0)` is exactly what an index written by
+    // a skipping path records — letting the claim agree with the emptiness is
+    // what made an empty index permanent.
+    if actual_docs == 0 {
+        return Some(LexIndexFault::PutTimeSkipped);
+    }
+    // Known disagreement with the catalog's own count. `None` here means the
+    // catalog never made a claim, so it abstains rather than refusing: absent
+    // evidence is never read as a contradiction.
+    if let Some(expected) = expected_docs {
+        return (expected != actual_docs).then_some(LexIndexFault::CountDiverged);
+    }
+    None
+}
+
 /// Validates segment integrity on file open to catch corruption early.
 /// This helps doctor by detecting issues before they cause problems.
 #[allow(dead_code)]
